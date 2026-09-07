@@ -1,0 +1,10 @@
+fastapi>=0.115
+uvicorn[standard]
+pydantic>=2.0
+pydantic-settings
+sqlalchemy[asyncio]>=2.0.33
+asyncpg
+psycopg[binary]>=3.2
+
+# dev
+ruff
