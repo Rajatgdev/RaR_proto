@@ -1,17 +1,19 @@
 const BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
-export async function writePing(note: string) {
-  const r = await fetch(`${BASE}/ping`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ note }),
-  });
-  if (!r.ok) throw new Error(`POST /ping ${r.status}`);
+export const loginUrl = () => `${BASE}/auth/google/login`;
+
+export type Status = { connected: boolean; email: string | null };
+export type Slot = { start: string; end: string };
+export type Availability = { calendar: string; count: number; slots: Slot[] };
+
+export async function getStatus(): Promise<Status> {
+  const r = await fetch(`${BASE}/auth/google/status`);
+  if (!r.ok) throw new Error(`status ${r.status}`);
   return r.json();
 }
 
-export async function latestPing() {
-  const r = await fetch(`${BASE}/ping`);
-  if (!r.ok) throw new Error(`GET /ping ${r.status}`);
+export async function getAvailability(): Promise<Availability> {
+  const r = await fetch(`${BASE}/availability`);
+  if (!r.ok) throw new Error((await r.json()).detail ?? `availability ${r.status}`);
   return r.json();
 }
