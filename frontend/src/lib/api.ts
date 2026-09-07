@@ -44,7 +44,7 @@ export const updateCard = (jobId: number, card: Card) =>
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ card }),
-  }).then(j<{ job_id: number; card: Card }>);
+  }).then(j<{ job_id: number; card: Card; status: string }>);
 
 export const intake = (jobId: number, csv: string) =>
   fetch(`${BASE}/jobs/${jobId}/candidates`, {
