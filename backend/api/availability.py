@@ -29,6 +29,7 @@ async def _load_account(db: AsyncSession):
 @router.get("")
 async def availability(
     db: AsyncSession = Depends(get_session),
+    job_id: int = Query(..., description="job must be confirmed (Gate 1) first"),
     days: int = Query(10, ge=1, le=30),
     duration: int = Query(30, ge=15, le=120),
     buffer: int = Query(10, ge=0, le=60),
@@ -36,6 +37,16 @@ async def availability(
     work_end: str = Query("17:00"),
     tz: str = Query("Europe/London"),
 ):
+    account = await _load_account(db)
+     # Gate 1: no calendar is touched until the recruiter has confirmed the card.
+    job = (
+        await db.execute(text("SELECT status FROM job WHERE id = :id"), {"id": job_id})
+    ).mappings().one_or_none()
+    if job is None:
+        raise HTTPException(404, "job not found")
+    if job["status"] != "confirmed":
+        raise HTTPException(403, "job not confirmed; approve the parameter card (Gate 1) first")
+
     account = await _load_account(db)
     if account is None:
         raise HTTPException(400, "no Google account connected")

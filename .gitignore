@@ -9,3 +9,7 @@ dist/
 frontend/.env
 # misc
 .DS_Store
+
+*.tsbuildinfo
+vite.config.d.ts
+vite.config.js
