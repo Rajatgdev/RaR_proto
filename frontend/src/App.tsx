@@ -137,7 +137,18 @@ export default function App() {
 
       {job && (
         <section style={box}>
-          <h3>3 · Candidates <span style={sm}>(CSV: name,email[,phone,timezone])</span></h3>
+          <h3>3 · Candidates <span style={sm}>(upload a CSV or type below: name,email[,phone,timezone])</span></h3>
+          <input type="file" accept=".csv,text/csv" disabled={locked}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (!f) return;
+              const reader = new FileReader();
+              reader.onload = () => { setCsv(String(reader.result ?? "")); setToast(`Loaded ${f.name}`); };
+              reader.onerror = () => setError(`could not read ${f.name}`);
+              reader.readAsText(f);
+              e.target.value = "";  // allow re-selecting the same file
+            }}
+            style={{ marginBottom: 8, display: "block" }} />
           <textarea value={csv} onChange={(e) => setCsv(e.target.value)} rows={4}
             disabled={locked}
             style={{ width: "100%", padding: 8, fontFamily: "monospace" }} />
