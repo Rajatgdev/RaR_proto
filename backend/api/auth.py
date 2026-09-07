@@ -22,13 +22,19 @@ async def login():
         include_granted_scopes="true",
         prompt="consent",            # force refresh token on re-consent
     )
+
     resp = RedirectResponse(url)
     resp.set_cookie(
         "oauth_state", state, max_age=600, httponly=True,
         secure=_SECURE, samesite="lax",
     )
+    # google-auth-oauthlib uses PKCE: the callback must present the same
+    # code_verifier that generated this request. Stash it (short-lived cookie).
+    resp.set_cookie(
+        "oauth_verifier", flow.code_verifier, max_age=600, httponly=True,
+        secure=_SECURE, samesite="lax",
+    )
     return resp
-
 
 @router.get("/callback")
 async def callback(request: Request, db: AsyncSession = Depends(get_session)):
@@ -44,6 +50,7 @@ async def callback(request: Request, db: AsyncSession = Depends(get_session)):
         raise HTTPException(400, "state mismatch")  # CSRF guard
 
     flow = gcal.build_flow(state=state)
+    flow.code_verifier = request.cookies.get("oauth_verifier")
     await run_in_threadpool(flow.fetch_token, code=code)
     creds = flow.credentials
 
@@ -61,6 +68,7 @@ async def callback(request: Request, db: AsyncSession = Depends(get_session)):
 
     resp = RedirectResponse(f"{settings.FRONTEND_URL}/?connected=1")
     resp.delete_cookie("oauth_state")
+    resp.delete_cookie("oauth_verifier")
     return resp
 
 
