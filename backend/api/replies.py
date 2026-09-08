@@ -78,12 +78,9 @@ async def parse_candidate_reply(job_id: int, candidate_id: int,
         return {"status": "no_reply", "message": "no candidate reply in the thread yet"}
 
     tz = cand["timezone"] or job["timezone"]
-    card = job["params"]
-    window_hint = (f"{card.get('window_days', 10)} working days from today, "
-                   f"{card.get('work_start')}–{card.get('work_end')}")
-    parsed = await run_in_threadpool(
-        rp.parse_reply, reply["body"], tz=tz, window_hint=window_hint)
 
+    # Held/available slots owned by (or open to) this candidate — computed BEFORE
+    # parsing so the LLM matches the reply against the concrete offered options.
     slot_rows = (
         await db.execute(
             text("SELECT id AS slot_id, start_ts, end_ts, status, hold_owner "
@@ -92,6 +89,9 @@ async def parse_candidate_reply(job_id: int, candidate_id: int,
     ).mappings().all()
     slots = [{"slot_id": s["slot_id"], "start": s["start_ts"].isoformat(),
               "end": s["end_ts"].isoformat()} for s in slot_rows]
+
+    parsed = await run_in_threadpool(
+        rp.parse_reply, reply["body"], tz=tz, offered_slots=slots)
 
     matched = rp.intersect_slots(parsed, slots, tz=tz)
     decision = rp.decide(parsed, matched)

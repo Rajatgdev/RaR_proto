@@ -17,34 +17,73 @@ from config import settings
 # Tunable during testing (build-plan says make it a config value).
 CONFIDENCE_THRESHOLD = 0.75
 
-_SYSTEM = """You read a candidate's email reply about interview scheduling and
-extract when they are available. Return ONLY JSON in exactly this shape:
+_SYSTEM = """You read a candidate's email reply and decide which of the OFFERED
+interview slots they chose (or whether they proposed a different time).
+
+You are given a numbered list of offered slots with their exact datetimes. Match
+the candidate's reply to those slots. Return ONLY JSON in exactly this shape:
 {
   "windows": [{"start": "YYYY-MM-DDTHH:MM:SS", "end": "YYYY-MM-DDTHH:MM:SS"}],
   "confidence": 0.0,
   "is_availability_answer": true,
-  "note": "one short line on what you understood or why unsure"
+  "note": "one short line on what you understood"
 }
 Rules:
-- Interpret relative dates ("next Tuesday", "tomorrow afternoon") against the
-  job timezone and interview window given in the user message, NOT today's date.
+- If the candidate clearly picks one or more of the offered slots (by day, date,
+  or time — e.g. "the Tuesday 08 September slot", "Wednesday works"), return a
+  window that spans exactly that slot's start–end, set is_availability_answer=true
+  and confidence high (>=0.8).
+- If they propose a time NOT in the offered list, return that window with lower
+  confidence and is_availability_answer=true.
+- Only set is_availability_answer=false if the message is a question, a decline,
+  or not about scheduling at all.
 - Times are local to the job timezone; output naive ISO (no offset).
-- "afternoon" = 12:00-17:00, "morning" = 09:00-12:00 unless they say otherwise.
-- If the message is a question, a decline, or not about availability, set
-  is_availability_answer=false and confidence low.
-- confidence reflects how sure you are you understood their availability.
 Output JSON only."""
 
+# Everything below a quoted-original marker is not the candidate's new text.
+_QUOTE_MARKERS = ("\nOn ", "\n> ", "\n-----Original", "\n________________")
 
-def parse_reply(reply_text: str, *, tz: str, window_hint: str) -> dict:
-    """LLM parse. Returns the raw structured dict (validated shape, defaults on
-    failure). No decisions here — the caller applies the gate."""
+
+def strip_quoted(text: str) -> str:
+    """Remove the quoted original email from a reply, keeping only new text."""
+    earliest = len(text)
+    import re
+    m = re.search(r"\nOn .+wrote:", text)
+    if m:
+        earliest = min(earliest, m.start())
+    qm = re.search(r"\n>", text)
+    if qm:
+        earliest = min(earliest, qm.start())
+    for marker in ("\n-----Original", "\n________________"):
+        i = text.find(marker)
+        if i != -1:
+            earliest = min(earliest, i)
+    return text[:earliest].strip()
+
+
+def _slot_lines(slots: list[dict], tz: str) -> str:
+    from zoneinfo import ZoneInfo
+    zone = ZoneInfo(tz)
+    lines = []
+    for i, s in enumerate(slots, 1):
+        st = datetime.fromisoformat(s["start"]).astimezone(zone)
+        en = datetime.fromisoformat(s["end"]).astimezone(zone)
+        lines.append(f"{i}. {st.strftime('%A %d %B %Y, %I:%M %p')} "
+                     f"(start {st.strftime('%Y-%m-%dT%H:%M:%S')}, "
+                     f"end {en.strftime('%Y-%m-%dT%H:%M:%S')})")
+    return "\n".join(lines)
+
+
+def parse_reply(reply_text: str, *, tz: str, offered_slots: list[dict]) -> dict:
+    """LLM parse against the concrete offered slots. Strips quoted history first.
+    Returns the validated structured dict (defaults on failure)."""
+    clean = strip_quoted(reply_text) or reply_text
     try:
         from openai import OpenAI
 
         client = OpenAI(api_key=settings.OPENAI_API_KEY)
-        user = (f"Job timezone: {tz}\nInterview window: {window_hint}\n\n"
-                f"Candidate reply:\n{reply_text}")
+        user = (f"Job timezone: {tz}\n\nOffered slots:\n{_slot_lines(offered_slots, tz)}\n\n"
+                f"Candidate reply (quoted history removed):\n{clean}")
         resp = client.chat.completions.create(
             model=settings.LLM_MODEL,
             messages=[{"role": "system", "content": _SYSTEM},
