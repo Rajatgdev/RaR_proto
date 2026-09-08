@@ -110,7 +110,9 @@ async def generate(job_id: int, db: AsyncSession = Depends(get_session)):
             await db.execute(
                 text("INSERT INTO slot (job_id, interviewer_id, start_ts, end_ts, status) "
                      "VALUES (:j, :iv, :st, :et, 'available') RETURNING id"),
-                {"j": job_id, "iv": iv, "st": s["start"], "et": s["end"]})
+                {"j": job_id, "iv": iv,
+                 "st": datetime.fromisoformat(s["start"]),
+                 "et": datetime.fromisoformat(s["end"])})
         ).scalar_one()
         created.append({"slot_id": row, "start": s["start"], "end": s["end"]})
 
