@@ -1,14 +1,16 @@
 import { useEffect, useState } from "react";
 import {
-  confirmJob, createJob, getAvailability, getStatus, intake, loginUrl, updateCard,
-  type Availability, type Card, type Job, type NormResult, type Status,
+  bookSlot, confirmJob, createJob, generateSlots, getStatus, holdSlot, intake, listSlots,
+  loginUrl, updateCard,
+  type Card, type GenResult, type Job, type NormResult, type SlotRow, type Status,
 } from "./lib/api";
 
 const TZ = "Europe/London";
 
-// Phase 2: parameter card -> intake -> normalise -> Gate 1.
-// Gate rules: fields lock on confirm; editing re-opens the gate; confirm is
-// blocked while any candidate row is faulty. Availability sits behind the gate.
+// Phase 3: after Gate 1, generate the offer pool from the confirmed card
+// (respects work_start/work_end), then hold -> book with the server-side
+// double-booking guard. Manual hold/book here is a demo aid to see the state
+// transitions; Phase 4 drives booking from a confirmed candidate reply.
 export default function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -22,14 +24,16 @@ export default function App() {
   const [csv, setCsv] = useState("name,email\nAlex Candidate,alex@example.com\n");
   const [normResult, setNormResult] = useState<NormResult | null>(null);
   const [confirmed, setConfirmed] = useState(false);
-  const [avail, setAvail] = useState<Availability | null>(null);
+  const [gen, setGen] = useState<GenResult | null>(null);
+  const [slots, setSlots] = useState<SlotRow[]>([]);
+  const [holds, setHolds] = useState<Record<number, string>>({});
+  const [firstCandidateId, setFirstCandidateId] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     getStatus().then(setStatus).catch((e) => setError(String(e)));
   }, []);
 
-  // auto-dismiss the saved/updated toast
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(null), 2500);
@@ -42,7 +46,6 @@ export default function App() {
     finally { setBusy(false); }
   };
 
-  // Derived gate conditions.
   const hasCandidates = (normResult?.ready.length ?? 0) > 0;
   const hasFaulty = (normResult?.excluded.length ?? 0) > 0;
   const canConfirm = !!card && hasCandidates && !hasFaulty && !confirmed;
@@ -50,14 +53,14 @@ export default function App() {
   const parse = () => run(async () => {
     const j = await createJob(request, TZ);
     setJob(j); setCard(j.card);
-    setConfirmed(false); setAvail(null); setNormResult(null);
+    setConfirmed(false); setNormResult(null); setGen(null); setSlots([]); setHolds({});
   });
 
   const saveCard = () => run(async () => {
     if (!job || !card) return;
     const r = await updateCard(job.job_id, card);
     if (r.status === "draft" && confirmed) setConfirmed(false);  // re-open gate
-    setAvail(null);
+    setGen(null); setSlots([]); setHolds({});
     setToast("Parameter card saved");
   });
 
@@ -66,8 +69,7 @@ export default function App() {
     const r = await intake(job.job_id, csv);
     setNormResult(r);
     setToast(r.summary);
-    // a fresh intake that (re)introduces faults must re-open the gate
-    if (r.excluded.length > 0 && confirmed) { setConfirmed(false); setAvail(null); }
+    if (r.excluded.length > 0 && confirmed) { setConfirmed(false); setGen(null); setSlots([]); }
   });
 
   const doConfirm = () => run(async () => {
@@ -75,23 +77,45 @@ export default function App() {
     await updateCard(job.job_id, card);   // persist any last edits (keeps it draft)
     await confirmJob(job.job_id);          // server re-checks candidates + faults
     setConfirmed(true);
-    setToast("Confirmed — calendar reads unlocked");
+    setToast("Confirmed — slot generation unlocked");
   });
 
-  const editAgain = () => { setConfirmed(false); setAvail(null); setToast("Editing re-opened — confirm again when ready"); };
+  const editAgain = () => { setConfirmed(false); setGen(null); setSlots([]); setHolds({}); setToast("Editing re-opened — confirm again when ready"); };
 
-  const loadAvail = () => run(async () => {
-    if (!job) return; setAvail(await getAvailability(job.job_id));
+  const refreshSlots = async (jobId: number) => setSlots(await listSlots(jobId));
+
+  const genSlots = () => run(async () => {
+    if (!job) return;
+    const g = await generateSlots(job.job_id);
+    setGen(g); await refreshSlots(job.job_id);
+    const res = await fetch(`${import.meta.env.VITE_API_BASE_URL ?? ""}/jobs/${job.job_id}`).then((r) => r.json());
+    setFirstCandidateId(res.candidates?.[0]?.id ?? null);
+    setToast(`Offered ${g.offered} of ${g.eligible} eligible`);
+  });
+
+  const hold = (slotId: number) => run(async () => {
+    if (!job || !firstCandidateId) throw new Error("no candidate to hold with");
+    const h = await holdSlot(job.job_id, slotId, firstCandidateId);
+    setHolds((m) => ({ ...m, [slotId]: h.hold_id }));
+    await refreshSlots(job.job_id);
+    setToast("Slot held");
+  });
+
+  const bookIt = (slotId: number) => run(async () => {
+    if (!job || !firstCandidateId) return;
+    await bookSlot(job.job_id, slotId, firstCandidateId, holds[slotId]);
+    await refreshSlots(job.job_id);
+    setToast("Slot booked");
   });
 
   const set = <K extends keyof Card>(k: K, v: Card[K]) =>
     setCard((c) => (c ? { ...c, [k]: v } : c));
 
-  const locked = confirmed;  // fields are read-only once confirmed
+  const locked = confirmed;
 
   return (
     <main style={{ fontFamily: "system-ui", maxWidth: 760, margin: "3rem auto", padding: "0 1rem" }}>
-      <h1>Scheduling Agent — Phase 2</h1>
+      <h1>Scheduling Agent — Phase 3</h1>
 
       {!status?.connected ? (
         <a href={loginUrl()}><button style={btn}>Connect Google Calendar</button></a>
@@ -146,7 +170,7 @@ export default function App() {
               reader.onload = () => { setCsv(String(reader.result ?? "")); setToast(`Loaded ${f.name}`); };
               reader.onerror = () => setError(`could not read ${f.name}`);
               reader.readAsText(f);
-              e.target.value = "";  // allow re-selecting the same file
+              e.target.value = "";
             }}
             style={{ marginBottom: 8, display: "block" }} />
           <textarea value={csv} onChange={(e) => setCsv(e.target.value)} rows={4}
@@ -185,26 +209,38 @@ export default function App() {
             </>
           ) : (
             <>
-              <p style={{ color: "#3a3" }}>✓ Confirmed. Calendar reads are now unlocked.</p>
-              <button style={btn} onClick={loadAvail} disabled={busy}>Load availability</button>
+              <p style={{ color: "#3a3" }}>✓ Confirmed. Slot generation unlocked.</p>
+              <button style={btn} onClick={genSlots} disabled={busy}>Generate offer slots</button>
+              {gen && <p style={sm}>{gen.eligible} eligible in window → offered {gen.offered} (max 5, spread for fairness)</p>}
             </>
           )}
         </section>
       )}
 
-      {error && <pre style={{ color: "crimson", whiteSpace: "pre-wrap" }}>{error}</pre>}
-
-      {avail && (
+      {slots.length > 0 && (
         <section style={box}>
-          <h3>{avail.count} slots for {avail.calendar}</h3>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {avail.slots.slice(0, 40).map((s) => (
-              <span key={s.start} style={chip}>{fmt(s.start)}</span>
+          <h3>5 · Offer pool <span style={sm}>(hold → book; the double-booking guard is server-side)</span></h3>
+          <ul style={{ listStyle: "none", padding: 0 }}>
+            {slots.map((s) => (
+              <li key={s.slot_id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 0" }}>
+                <span style={{ minWidth: 190 }}>{fmtFull(s.start_ts)}</span>
+                <span style={{ ...chip, background: s.status === "booked" ? "#dfd" : s.status === "held" ? "#ffe8bf" : "#eef" }}>
+                  {s.status}
+                </span>
+                {s.status === "available" && (
+                  <button style={btnSm} onClick={() => hold(s.slot_id)} disabled={busy}>Hold</button>
+                )}
+                {s.status === "held" && holds[s.slot_id] && (
+                  <button style={btnSm} onClick={() => bookIt(s.slot_id)} disabled={busy}>Book</button>
+                )}
+              </li>
             ))}
-          </div>
-          {avail.slots.length > 40 && <p style={sm}>…and {avail.slots.length - 40} more</p>}
+          </ul>
+          <p style={sm}>Candidate used for this manual test: id {firstCandidateId ?? "—"}</p>
         </section>
       )}
+
+      {error && <pre style={{ color: "crimson", whiteSpace: "pre-wrap" }}>{error}</pre>}
 
       {toast && <div style={toastStyle}>{toast}</div>}
     </main>
@@ -215,14 +251,14 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   return <label style={{ display: "flex", flexDirection: "column", fontSize: 13, gap: 4 }}>
     {label}{children}</label>;
 }
-function fmt(iso: string) {
-  const d = new Date(iso);
-  return d.toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" });
+function fmtFull(iso: string) {
+  return new Date(iso).toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
 const box: React.CSSProperties = { border: "1px solid #ddd", borderRadius: 8, padding: 16, marginTop: 16 };
 const grid: React.CSSProperties = { display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 10 };
 const btn: React.CSSProperties = { padding: "9px 16px", fontSize: 14, cursor: "pointer", marginTop: 10 };
+const btnSm: React.CSSProperties = { padding: "4px 10px", fontSize: 13, cursor: "pointer" };
 const btnGhost: React.CSSProperties = { ...btn, background: "#f3f3f3" };
 const inp: React.CSSProperties = { padding: 6, fontSize: 14 };
 const chip: React.CSSProperties = { padding: "5px 9px", background: "#eef", borderRadius: 6, fontSize: 13 };

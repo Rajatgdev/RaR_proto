@@ -165,7 +165,7 @@ async def get_job(job_id: int, db: AsyncSession = Depends(get_session)):
         raise HTTPException(404, "job not found")
     cands = (
         await db.execute(
-            text("SELECT name, email, timezone, status FROM candidate "
+            text("SELECT id, name, email, timezone, status FROM candidate "
                  "WHERE job_id = :id ORDER BY id"),
             {"id": job_id})
     ).mappings().all()

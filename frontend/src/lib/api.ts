@@ -3,8 +3,6 @@ const BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 export const loginUrl = () => `${BASE}/auth/google/login`;
 
 export type Status = { connected: boolean; email: string | null };
-export type Slot = { start: string; end: string };
-export type Availability = { calendar: string; count: number; slots: Slot[] };
 
 export type Card = {
   job_title: string;
@@ -58,5 +56,26 @@ export const confirmJob = (jobId: number) =>
     j<{ job_id: number; status: string }>
   );
 
-export const getAvailability = (jobId: number) =>
-  fetch(`${BASE}/availability?job_id=${jobId}`).then(j<Availability>);
+// --- Phase 3: slots, holds, booking ---
+export type GenResult = { eligible: number; offered: number;
+  slots: { slot_id: number; start: string; end: string }[] };
+export type SlotRow = { slot_id: number; start_ts: string; end_ts: string;
+  status: string; hold_expires_at: string | null };
+
+export const generateSlots = (jobId: number) =>
+  fetch(`${BASE}/jobs/${jobId}/slots/generate`, { method: "POST" }).then(j<GenResult>);
+
+export const listSlots = (jobId: number) =>
+  fetch(`${BASE}/jobs/${jobId}/slots`).then(j<SlotRow[]>);
+
+export const holdSlot = (jobId: number, slotId: number, candidateId: number) =>
+  fetch(`${BASE}/jobs/${jobId}/slots/${slotId}/hold`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ candidate_id: candidateId }),
+  }).then(j<{ slot_id: number; hold_id: string; hold_expires_at: string }>);
+
+export const bookSlot = (jobId: number, slotId: number, candidateId: number, holdId: string) =>
+  fetch(`${BASE}/jobs/${jobId}/slots/${slotId}/book`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ candidate_id: candidateId, hold_id: holdId }),
+  }).then(j<{ slot_id: number; status: string }>);
