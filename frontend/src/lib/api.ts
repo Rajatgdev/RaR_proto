@@ -96,3 +96,10 @@ export const approveOutreach = (jobId: number, subject: string, body: string) =>
 
 export const sendOutreach = (jobId: number) =>
   fetch(`${BASE}/jobs/${jobId}/outreach/send`, { method: "POST" }).then(j<SendResult>);
+
+export type Preview = { to: string; subject: string; body: string };
+export const previewOutreach = (jobId: number, subject: string, body: string) =>
+  fetch(`${BASE}/jobs/${jobId}/outreach/preview`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ subject, body }),
+  }).then(j<Preview>);

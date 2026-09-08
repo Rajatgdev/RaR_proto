@@ -58,6 +58,44 @@ class Approve(BaseModel):
     body: str
 
 
+@router.post("/preview")
+async def preview(job_id: int, body: Approve, db: AsyncSession = Depends(get_session)):
+    """Render the template as the FIRST candidate would receive it — no send.
+
+    Lets the recruiter approve the real email, not the {placeholder} template.
+    """
+    job = await _job(db, job_id)
+    card = job["params"]
+    interviewer = (card.get("interviewers") or [{}])[0].get("name") or "the interviewer"
+    duration = card.get("duration_min", 30)
+
+    cand = (
+        await db.execute(
+            text("SELECT name, email, timezone FROM candidate "
+                 "WHERE job_id = :j ORDER BY id LIMIT 1"), {"j": job_id})
+    ).mappings().one_or_none()
+    slots = (
+        await db.execute(
+            text("SELECT start_ts, end_ts FROM slot "
+                 "WHERE job_id = :j AND status IN ('available','held') ORDER BY start_ts"),
+            {"j": job_id})
+    ).mappings().all()
+    slot_dicts = [{"start": s["start_ts"].isoformat(), "end": s["end_ts"].isoformat()}
+                  for s in slots]
+
+    try:
+        subject, mail_body = tpl.render(
+            body.subject, body.body,
+            name=cand["name"] if cand else None, interviewer=interviewer,
+            job=card.get("job_title", "the role"), duration=duration,
+            slots=slot_dicts, tz=(cand["timezone"] if cand else None) or job["timezone"])
+    except KeyError as e:
+        raise HTTPException(422, f"unknown placeholder {e} in template")
+
+    return {"to": cand["email"] if cand else "(no candidate yet)",
+            "subject": subject, "body": mail_body}
+
+
 @router.post("/approve")
 async def approve(job_id: int, body: Approve, db: AsyncSession = Depends(get_session)):
     job = await _job(db, job_id)

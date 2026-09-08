@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
+
 import {
   approveOutreach, bookSlot, confirmJob, createJob, generateSlots, getStatus, getTemplate,
-  holdSlot, intake, listSlots, loginUrl, sendOutreach, updateCard,
+  holdSlot, intake, listSlots, loginUrl, previewOutreach, sendOutreach, updateCard,
   type Card, type GenResult, type Job, type NormResult, type SendResult, type SlotRow,
-  type Status, type Template,
+  type Preview, type Status, type Template,
 } from "./lib/api";
 
 const TZ = "Europe/London";
@@ -30,6 +31,7 @@ export default function App() {
   const [firstCandidateId, setFirstCandidateId] = useState<number | null>(null);
   const [tpl, setTpl] = useState<Template | null>(null);
   const [sent, setSent] = useState<SendResult | null>(null);
+  const [preview, setPreview] = useState<Preview | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -55,14 +57,14 @@ export default function App() {
   const parse = () => run(async () => {
     const j = await createJob(request, TZ);
     setJob(j); setCard(j.card);
-    setConfirmed(false); setNormResult(null); setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null);
+    setConfirmed(false); setNormResult(null); setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setPreview(null);
   });
 
   const saveCard = () => run(async () => {
     if (!job || !card) return;
     const r = await updateCard(job.job_id, card);
     if (r.status === "draft" && confirmed) setConfirmed(false);  // re-open gate
-    setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null);
+    setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setPreview(null);
     setToast("Parameter card saved");
   });
 
@@ -82,7 +84,7 @@ export default function App() {
     setToast("Confirmed — slot generation unlocked");
   });
 
-  const editAgain = () => { setConfirmed(false); setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setToast("Editing re-opened — confirm again when ready"); };
+  const editAgain = () => { setConfirmed(false); setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setPreview(null); setToast("Editing re-opened — confirm again when ready"); };
 
   const refreshSlots = async (jobId: number) => setSlots(await listSlots(jobId));
 
@@ -95,6 +97,11 @@ export default function App() {
     setTpl(await getTemplate(job.job_id));   // load outreach template for Gate 2
     setSent(null);
     setToast(`Offered ${g.offered} of ${g.eligible} eligible`);
+  });
+
+  const doPreview = () => run(async () => {
+    if (!job || !tpl) return;
+    setPreview(await previewOutreach(job.job_id, tpl.subject, tpl.body));
   });
 
   const approve = () => run(async () => {
@@ -272,6 +279,16 @@ export default function App() {
               onChange={(e) => setTpl({ ...tpl, body: e.target.value })}
               style={{ padding: 8, fontFamily: "inherit" }} />
           </label>
+
+          <button style={btnGhost} onClick={doPreview} disabled={busy}>Preview candidate email</button>
+          {preview && (
+            <div style={{ border: "1px solid #ccd", borderRadius: 8, padding: 12, marginTop: 10, background: "#fafbff" }}>
+              <p style={sm}>Preview — as <strong>{preview.to}</strong> would receive it:</p>
+              <p style={{ margin: "4px 0", fontWeight: 600 }}>{preview.subject}</p>
+              <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit", margin: 0 }}>{preview.body}</pre>
+            </div>
+          )}
+
           {!tpl.approved ? (
             <button style={btn} onClick={approve} disabled={busy}>Approve outreach (Gate 2)</button>
           ) : !sent ? (
