@@ -117,3 +117,13 @@ export type ReplyParse = {
 export const parseReply = (jobId: number, candidateId: number) =>
   fetch(`${BASE}/jobs/${jobId}/replies/${candidateId}/parse`, { method: "POST" })
     .then(j<ReplyParse>);
+
+// --- Phase 4c: recruiter confirms -> book + Meet + confirmations ---
+export type BookResult = { status: string; slot_id: number; when: string;
+  meet_link: string; event_link: string; mail_status: string };
+
+export const confirmBooking = (jobId: number, candidateId: number, slotId: number) =>
+  fetch(`${BASE}/jobs/${jobId}/replies/${candidateId}/confirm`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ slot_id: slotId }),
+  }).then(j<BookResult>);

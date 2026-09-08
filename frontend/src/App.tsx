@@ -1,17 +1,18 @@
 import { useEffect, useState } from "react";
 
 import {
-  approveOutreach, bookSlot, confirmJob, createJob, generateSlots, getStatus, getTemplate,
-  holdSlot, intake, listSlots, loginUrl, parseReply, previewOutreach, sendOutreach, updateCard,
-  type Card, type GenResult, type Job, type NormResult, type SendResult, type SlotRow,
-  type Preview, type ReplyParse, type Status, type Template,
+  approveOutreach, bookSlot, confirmBooking, confirmJob, createJob, generateSlots, getStatus,
+  getTemplate, holdSlot, intake, listSlots, loginUrl, parseReply, previewOutreach, sendOutreach,
+  updateCard,
+  type BookResult, type Card, type GenResult, type Job, type NormResult, type Preview,
+  type ReplyParse, type SendResult, type SlotRow, type Status, type Template,
 } from "./lib/api";
 
 const TZ = "Europe/London";
 
-// Phase 4b: after outreach is sent, read the candidate's reply, run one LLM
-// parse -> availability window + confidence, intersect against held slots, then
-// propose (high confidence) or escalate to Needs attention (low). Never books.
+// Phase 4 complete: setup -> Gate 1 -> slots -> Gate 2 -> send -> read reply ->
+// parse (propose/escalate) -> recruiter Confirm -> real Meet event + both
+// confirmations. The agent proposes; the human commits. Never auto-books.
 export default function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -33,6 +34,8 @@ export default function App() {
   const [sent, setSent] = useState<SendResult | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [replyParse, setReplyParse] = useState<ReplyParse | null>(null);
+  const [chosenSlot, setChosenSlot] = useState<number | null>(null);
+  const [booked, setBooked] = useState<BookResult | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -58,14 +61,14 @@ export default function App() {
   const parse = () => run(async () => {
     const j = await createJob(request, TZ);
     setJob(j); setCard(j.card);
-    setConfirmed(false); setNormResult(null); setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setPreview(null); setReplyParse(null);
+    setConfirmed(false); setNormResult(null); setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setPreview(null); setReplyParse(null); setChosenSlot(null); setBooked(null);
   });
 
   const saveCard = () => run(async () => {
     if (!job || !card) return;
     const r = await updateCard(job.job_id, card);
     if (r.status === "draft" && confirmed) setConfirmed(false);  // re-open gate
-    setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setPreview(null); setReplyParse(null);
+    setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setPreview(null); setReplyParse(null); setChosenSlot(null); setBooked(null);
     setToast("Parameter card saved");
   });
 
@@ -85,7 +88,7 @@ export default function App() {
     setToast("Confirmed — slot generation unlocked");
   });
 
-  const editAgain = () => { setConfirmed(false); setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setPreview(null); setReplyParse(null); setToast("Editing re-opened — confirm again when ready"); };
+  const editAgain = () => { setConfirmed(false); setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setPreview(null); setReplyParse(null); setChosenSlot(null); setBooked(null); setToast("Editing re-opened — confirm again when ready"); };
 
   const refreshSlots = async (jobId: number) => setSlots(await listSlots(jobId));
 
@@ -124,9 +127,19 @@ export default function App() {
     if (!job || !firstCandidateId) throw new Error("no candidate to read a reply for");
     const r = await parseReply(job.job_id, firstCandidateId);
     setReplyParse(r);
+    setBooked(null);
+    setChosenSlot(r.proposed_slots?.[0]?.slot_id ?? null);
     setToast(r.status === "confirm" ? "High-confidence match — review & confirm"
       : r.status === "escalate" ? "Escalated to Needs attention"
       : "No reply yet");
+  });
+
+  const doConfirmBooking = () => run(async () => {
+    if (!job || !firstCandidateId || !chosenSlot) return;
+    const r = await confirmBooking(job.job_id, firstCandidateId, chosenSlot);
+    setBooked(r);
+    await refreshSlots(job.job_id);
+    setToast("Booked — event + Meet created, confirmations sent");
   });
 
   const hold = (slotId: number) => run(async () => {
@@ -341,13 +354,35 @@ export default function App() {
 
               {replyParse.status === "confirm" ? (
                 <div style={{ border: "1px solid #3a3", borderRadius: 8, padding: 12, marginTop: 8, background: "#f3fff3" }}>
-                  <p style={{ margin: "0 0 6px", fontWeight: 600 }}>Proposed — recruiter confirms (booking is Phase 4c):</p>
-                  <ul style={{ margin: 0 }}>
-                    {replyParse.proposed_slots?.map((s) => (
-                      <li key={s.slot_id}>{fmtFull(s.start)} <span style={sm}>(slot {s.slot_id})</span></li>
-                    ))}
-                  </ul>
-                  <p style={sm}>[Confirm] / [Edit] wired in 4c — this proves parse → match → propose, no auto-book.</p>
+                  {!booked ? (
+                    <>
+                      <p style={{ margin: "0 0 6px", fontWeight: 600 }}>Proposed slot — the human commits:</p>
+                      <label style={{ display: "block", fontSize: 14, marginBottom: 8 }}>
+                        Slot to book (Edit before confirming):{" "}
+                        <select value={chosenSlot ?? ""} style={inp}
+                          onChange={(e) => setChosenSlot(Number(e.target.value))}>
+                          {replyParse.proposed_slots?.map((s) => (
+                            <option key={s.slot_id} value={s.slot_id}>{fmtFull(s.start)} (slot {s.slot_id})</option>
+                          ))}
+                        </select>
+                      </label>
+                      <button style={btn} onClick={doConfirmBooking} disabled={busy || !chosenSlot}>
+                        Confirm &amp; book
+                      </button>
+                    </>
+                  ) : (
+                    <div>
+                      <p style={{ margin: 0, fontWeight: 600, color: "#2a7" }}>✓ Booked for {booked.when}</p>
+                      <p style={{ margin: "6px 0 0" }}>
+                        Meet: {booked.meet_link
+                          ? <a href={booked.meet_link} target="_blank" rel="noreferrer">{booked.meet_link}</a>
+                          : "(generating…)"}
+                      </p>
+                      {booked.event_link && <p style={{ margin: "4px 0 0" }}>
+                        <a href={booked.event_link} target="_blank" rel="noreferrer" style={sm as React.CSSProperties}>view calendar event</a></p>}
+                      <p style={sm}>{booked.mail_status === "sent" ? "Both confirmation emails sent; other holds released." : booked.mail_status}</p>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div style={{ border: "1px solid #e5a300", borderRadius: 8, padding: 12, marginTop: 8, background: "#fffaf0" }}>

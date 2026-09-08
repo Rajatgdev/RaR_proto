@@ -142,3 +142,52 @@ def free_busy(creds: Credentials, calendar_id: str, time_min: str, time_max: str
         # Per research: a per-calendar error means "unknown", never "free".
         raise RuntimeError(f"FreeBusy error for {calendar_id}: {cal['errors']}")
     return cal.get("busy", [])
+
+
+def create_event_with_meet(creds: Credentials, calendar_id: str, *, summary: str,
+                           description: str, start_iso: str, end_iso: str,
+                           attendees: list[str], request_id: str) -> dict:
+    """Insert a timed event with a Google Meet link. Returns {event_id, meet_link, html_link}.
+
+    Uses conferenceDataVersion=1 + a unique createRequest (research: regenerate
+    requestId per conference; Meet generation is async so poll until the video
+    entry point appears).
+    """
+    import time as _time
+
+    body = {
+        "summary": summary,
+        "description": description,
+        "start": {"dateTime": start_iso},
+        "end": {"dateTime": end_iso},
+        "attendees": [{"email": e} for e in attendees if e],
+        "conferenceData": {
+            "createRequest": {
+                "requestId": request_id,
+                "conferenceSolutionKey": {"type": "hangoutsMeet"},
+            }
+        },
+    }
+    svc = _service(creds)
+    event = svc.events().insert(
+        calendarId=calendar_id, body=body, conferenceDataVersion=1,
+        sendUpdates="all").execute()
+
+    meet_link = _meet_link(event)
+    for _ in range(5):
+        if meet_link:
+            break
+        _time.sleep(1)
+        event = svc.events().get(
+            calendarId=calendar_id, eventId=event["id"]).execute()
+        meet_link = _meet_link(event)
+
+    return {"event_id": event["id"], "meet_link": meet_link,
+            "html_link": event.get("htmlLink", "")}
+
+
+def _meet_link(event: dict) -> str:
+    for ep in event.get("conferenceData", {}).get("entryPoints", []) or []:
+        if ep.get("entryPointType") == "video" and ep.get("uri"):
+            return ep["uri"]
+    return ""
