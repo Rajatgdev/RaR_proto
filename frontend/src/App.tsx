@@ -1,16 +1,16 @@
 import { useEffect, useState } from "react";
 import {
-  bookSlot, confirmJob, createJob, generateSlots, getStatus, holdSlot, intake, listSlots,
-  loginUrl, updateCard,
-  type Card, type GenResult, type Job, type NormResult, type SlotRow, type Status,
+  approveOutreach, bookSlot, confirmJob, createJob, generateSlots, getStatus, getTemplate,
+  holdSlot, intake, listSlots, loginUrl, sendOutreach, updateCard,
+  type Card, type GenResult, type Job, type NormResult, type SendResult, type SlotRow,
+  type Status, type Template,
 } from "./lib/api";
 
 const TZ = "Europe/London";
 
-// Phase 3: after Gate 1, generate the offer pool from the confirmed card
-// (respects work_start/work_end), then hold -> book with the server-side
-// double-booking guard. Manual hold/book here is a demo aid to see the state
-// transitions; Phase 4 drives booking from a confirmed candidate reply.
+// Phase 4a: after slots are generated, approve the outreach template + pool
+// (Gate 2), then send real emails via the connected mailbox. Sending holds the
+// offered slots per candidate and stores the Gmail thread id for reply-matching.
 export default function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -28,6 +28,8 @@ export default function App() {
   const [slots, setSlots] = useState<SlotRow[]>([]);
   const [holds, setHolds] = useState<Record<number, string>>({});
   const [firstCandidateId, setFirstCandidateId] = useState<number | null>(null);
+  const [tpl, setTpl] = useState<Template | null>(null);
+  const [sent, setSent] = useState<SendResult | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -53,14 +55,14 @@ export default function App() {
   const parse = () => run(async () => {
     const j = await createJob(request, TZ);
     setJob(j); setCard(j.card);
-    setConfirmed(false); setNormResult(null); setGen(null); setSlots([]); setHolds({});
+    setConfirmed(false); setNormResult(null); setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null);
   });
 
   const saveCard = () => run(async () => {
     if (!job || !card) return;
     const r = await updateCard(job.job_id, card);
     if (r.status === "draft" && confirmed) setConfirmed(false);  // re-open gate
-    setGen(null); setSlots([]); setHolds({});
+    setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null);
     setToast("Parameter card saved");
   });
 
@@ -80,7 +82,7 @@ export default function App() {
     setToast("Confirmed — slot generation unlocked");
   });
 
-  const editAgain = () => { setConfirmed(false); setGen(null); setSlots([]); setHolds({}); setToast("Editing re-opened — confirm again when ready"); };
+  const editAgain = () => { setConfirmed(false); setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setToast("Editing re-opened — confirm again when ready"); };
 
   const refreshSlots = async (jobId: number) => setSlots(await listSlots(jobId));
 
@@ -90,7 +92,24 @@ export default function App() {
     setGen(g); await refreshSlots(job.job_id);
     const res = await fetch(`${import.meta.env.VITE_API_BASE_URL ?? ""}/jobs/${job.job_id}`).then((r) => r.json());
     setFirstCandidateId(res.candidates?.[0]?.id ?? null);
+    setTpl(await getTemplate(job.job_id));   // load outreach template for Gate 2
+    setSent(null);
     setToast(`Offered ${g.offered} of ${g.eligible} eligible`);
+  });
+
+  const approve = () => run(async () => {
+    if (!job || !tpl) return;
+    const r = await approveOutreach(job.job_id, tpl.subject, tpl.body);
+    setTpl({ ...tpl, approved: true });
+    setToast(`Gate 2 approved — pool of ${r.pool_size}`);
+  });
+
+  const doSend = () => run(async () => {
+    if (!job) return;
+    const r = await sendOutreach(job.job_id);
+    setSent(r);
+    await refreshSlots(job.job_id);
+    setToast(`Sent ${r.sent} outreach email(s)`);
   });
 
   const hold = (slotId: number) => run(async () => {
@@ -115,7 +134,7 @@ export default function App() {
 
   return (
     <main style={{ fontFamily: "system-ui", maxWidth: 760, margin: "3rem auto", padding: "0 1rem" }}>
-      <h1>Scheduling Agent — Phase 3</h1>
+      <h1>Scheduling Agent — Phase 4</h1>
 
       {!status?.connected ? (
         <a href={loginUrl()}><button style={btn}>Connect Google Calendar</button></a>
@@ -237,6 +256,39 @@ export default function App() {
             ))}
           </ul>
           <p style={sm}>Candidate used for this manual test: id {firstCandidateId ?? "—"}</p>
+        </section>
+      )}
+
+      {tpl && (
+        <section style={{ ...box, borderColor: tpl.approved ? "#3a3" : "#e5a300" }}>
+          <h3>6 · Outreach &amp; Approval Gate 2 <span style={sm}>— approve the message + pool once, then send</span></h3>
+          <Field label="Subject">
+            <input style={inp} value={tpl.subject} disabled={tpl.approved}
+              onChange={(e) => setTpl({ ...tpl, subject: e.target.value })} />
+          </Field>
+          <label style={{ display: "flex", flexDirection: "column", fontSize: 13, gap: 4, marginTop: 8 }}>
+            Body <span style={sm}>placeholders: {"{name} {interviewer} {job} {duration} {slots}"}</span>
+            <textarea rows={9} value={tpl.body} disabled={tpl.approved}
+              onChange={(e) => setTpl({ ...tpl, body: e.target.value })}
+              style={{ padding: 8, fontFamily: "inherit" }} />
+          </label>
+          {!tpl.approved ? (
+            <button style={btn} onClick={approve} disabled={busy}>Approve outreach (Gate 2)</button>
+          ) : !sent ? (
+            <>
+              <p style={{ color: "#3a3" }}>✓ Approved. Ready to send real emails via the connected mailbox.</p>
+              <button style={btn} onClick={doSend} disabled={busy}>Send outreach emails</button>
+            </>
+          ) : (
+            <div>
+              <p style={{ color: "#3a3" }}>✓ Sent {sent.sent} email(s). Candidates moved to "slots offered"; slots held.</p>
+              <ul style={sm as React.CSSProperties}>
+                {sent.candidates.map((c) => (
+                  <li key={c.candidate_id}>{c.email} — thread {c.thread_id.slice(0, 10)}… · {c.held} slots held</li>
+                ))}
+              </ul>
+            </div>
+          )}
         </section>
       )}
 

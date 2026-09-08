@@ -63,6 +63,32 @@ def _service(creds: Credentials):
     return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
 
+def _gmail(creds: Credentials):
+    return build("gmail", "v1", credentials=creds, cache_discovery=False)
+
+
+def send_email(creds: Credentials, *, to: str, subject: str, body: str,
+               thread_id: str | None = None) -> dict:
+    """Send a plain-text email as the connected account. Returns {id, threadId}.
+
+    If thread_id is given the message is threaded into that conversation (used
+    for follow-ups). reply-to is the sending account itself so candidate replies
+    come back to the agent mailbox.
+    """
+    import base64
+    from email.mime.text import MIMEText
+
+    msg = MIMEText(body)
+    msg["to"] = to
+    msg["subject"] = subject
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+    payload = {"raw": raw}
+    if thread_id:
+        payload["threadId"] = thread_id
+    sent = _gmail(creds).users().messages().send(userId="me", body=payload).execute()
+    return {"id": sent["id"], "thread_id": sent["threadId"]}
+
+
 def primary_email(creds: Credentials) -> str:
     """The primary calendar's id is the account's email address."""
     return _service(creds).calendarList().get(calendarId="primary").execute()["id"]

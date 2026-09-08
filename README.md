@@ -49,9 +49,9 @@ npm run dev
 
 ## Phase status
 - [x] Phase 0 — skeleton + round trip (browser -> API -> Neon -> back)
-- [ ] Phase 1 — Google OAuth (all three scopes) + FreeBusy read
-- [ ] Phase 2 — setup, intake, normalisation, Gate 1 (+ full schema)
-- [ ] Phase 3 — slots, holds, double-booking safety (atomic claim + UNIQUE backstop)
+- [x] Phase 1 — Google OAuth (all three scopes) + FreeBusy read
+- [x] Phase 2 — setup, intake, normalisation, Gate 1 (+ full schema)
+- [x] Phase 3 — slots, holds, double-booking safety (atomic claim + UNIQUE backstop)
 - [ ] Phase 4 — outreach (Gate 2), reply parse + confidence gate, Confirm/Edit
       card, booking + Meet link + confirmations, low-conf escalation
 - [ ] Phase 5 — status board, one follow-up, cron sweep

@@ -79,3 +79,20 @@ export const bookSlot = (jobId: number, slotId: number, candidateId: number, hol
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ candidate_id: candidateId, hold_id: holdId }),
   }).then(j<{ slot_id: number; status: string }>);
+
+// --- Phase 4a: outreach + Gate 2 ---
+export type Template = { subject: string; body: string; approved: boolean };
+export type SendResult = { sent: number;
+  candidates: { candidate_id: number; email: string; thread_id: string; held: number }[] };
+
+export const getTemplate = (jobId: number) =>
+  fetch(`${BASE}/jobs/${jobId}/outreach/template`).then(j<Template>);
+
+export const approveOutreach = (jobId: number, subject: string, body: string) =>
+  fetch(`${BASE}/jobs/${jobId}/outreach/approve`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ subject, body }),
+  }).then(j<{ job_id: number; approved: boolean; pool_size: number }>);
+
+export const sendOutreach = (jobId: number) =>
+  fetch(`${BASE}/jobs/${jobId}/outreach/send`, { method: "POST" }).then(j<SendResult>);
