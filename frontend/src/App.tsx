@@ -2,16 +2,16 @@ import { useEffect, useState } from "react";
 
 import {
   approveOutreach, bookSlot, confirmJob, createJob, generateSlots, getStatus, getTemplate,
-  holdSlot, intake, listSlots, loginUrl, previewOutreach, sendOutreach, updateCard,
+  holdSlot, intake, listSlots, loginUrl, parseReply, previewOutreach, sendOutreach, updateCard,
   type Card, type GenResult, type Job, type NormResult, type SendResult, type SlotRow,
-  type Preview, type Status, type Template,
+  type Preview, type ReplyParse, type Status, type Template,
 } from "./lib/api";
 
 const TZ = "Europe/London";
 
-// Phase 4a: after slots are generated, approve the outreach template + pool
-// (Gate 2), then send real emails via the connected mailbox. Sending holds the
-// offered slots per candidate and stores the Gmail thread id for reply-matching.
+// Phase 4b: after outreach is sent, read the candidate's reply, run one LLM
+// parse -> availability window + confidence, intersect against held slots, then
+// propose (high confidence) or escalate to Needs attention (low). Never books.
 export default function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -32,6 +32,7 @@ export default function App() {
   const [tpl, setTpl] = useState<Template | null>(null);
   const [sent, setSent] = useState<SendResult | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
+  const [replyParse, setReplyParse] = useState<ReplyParse | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -57,14 +58,14 @@ export default function App() {
   const parse = () => run(async () => {
     const j = await createJob(request, TZ);
     setJob(j); setCard(j.card);
-    setConfirmed(false); setNormResult(null); setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setPreview(null);
+    setConfirmed(false); setNormResult(null); setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setPreview(null); setReplyParse(null);
   });
 
   const saveCard = () => run(async () => {
     if (!job || !card) return;
     const r = await updateCard(job.job_id, card);
     if (r.status === "draft" && confirmed) setConfirmed(false);  // re-open gate
-    setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setPreview(null);
+    setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setPreview(null); setReplyParse(null);
     setToast("Parameter card saved");
   });
 
@@ -84,7 +85,7 @@ export default function App() {
     setToast("Confirmed — slot generation unlocked");
   });
 
-  const editAgain = () => { setConfirmed(false); setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setPreview(null); setToast("Editing re-opened — confirm again when ready"); };
+  const editAgain = () => { setConfirmed(false); setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setPreview(null); setReplyParse(null); setToast("Editing re-opened — confirm again when ready"); };
 
   const refreshSlots = async (jobId: number) => setSlots(await listSlots(jobId));
 
@@ -117,6 +118,15 @@ export default function App() {
     setSent(r);
     await refreshSlots(job.job_id);
     setToast(`Sent ${r.sent} outreach email(s)`);
+  });
+
+  const doParseReply = () => run(async () => {
+    if (!job || !firstCandidateId) throw new Error("no candidate to read a reply for");
+    const r = await parseReply(job.job_id, firstCandidateId);
+    setReplyParse(r);
+    setToast(r.status === "confirm" ? "High-confidence match — review & confirm"
+      : r.status === "escalate" ? "Escalated to Needs attention"
+      : "No reply yet");
   });
 
   const hold = (slotId: number) => run(async () => {
@@ -304,6 +314,46 @@ export default function App() {
                   <li key={c.candidate_id}>{c.email} — thread {c.thread_id.slice(0, 10)}… · {c.held} slots held</li>
                 ))}
               </ul>
+            </div>
+          )}
+        </section>
+      )}
+
+      {sent && (
+        <section style={box}>
+          <h3>7 · Candidate reply <span style={sm}>(read the reply, parse it, propose or escalate)</span></h3>
+          <p style={sm}>Reads the latest reply for candidate id {firstCandidateId ?? "—"} and runs one LLM parse.</p>
+          <button style={btn} onClick={doParseReply} disabled={busy}>Read &amp; parse reply</button>
+
+          {replyParse && replyParse.status === "no_reply" && (
+            <p style={sm}>{replyParse.message}</p>
+          )}
+
+          {replyParse && replyParse.reply_body && (
+            <div style={{ marginTop: 12 }}>
+              <p style={sm}>Reply from {replyParse.reply_from}:</p>
+              <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit", background: "#f6f6f6", padding: 10, borderRadius: 6, margin: "4px 0" }}>{replyParse.reply_body}</pre>
+              <p style={sm}>
+                Confidence <strong>{(replyParse.confidence ?? 0).toFixed(2)}</strong>
+                {" · "}availability answer: {String(replyParse.is_availability_answer)}
+                {replyParse.note ? ` · ${replyParse.note}` : ""}
+              </p>
+
+              {replyParse.status === "confirm" ? (
+                <div style={{ border: "1px solid #3a3", borderRadius: 8, padding: 12, marginTop: 8, background: "#f3fff3" }}>
+                  <p style={{ margin: "0 0 6px", fontWeight: 600 }}>Proposed — recruiter confirms (booking is Phase 4c):</p>
+                  <ul style={{ margin: 0 }}>
+                    {replyParse.proposed_slots?.map((s) => (
+                      <li key={s.slot_id}>{fmtFull(s.start)} <span style={sm}>(slot {s.slot_id})</span></li>
+                    ))}
+                  </ul>
+                  <p style={sm}>[Confirm] / [Edit] wired in 4c — this proves parse → match → propose, no auto-book.</p>
+                </div>
+              ) : (
+                <div style={{ border: "1px solid #e5a300", borderRadius: 8, padding: 12, marginTop: 8, background: "#fffaf0" }}>
+                  <p style={{ margin: 0 }}>⚠ Escalated to <strong>Needs attention</strong> — {replyParse.reason}. Recruiter handles manually.</p>
+                </div>
+              )}
             </div>
           )}
         </section>

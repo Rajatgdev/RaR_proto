@@ -89,6 +89,46 @@ def send_email(creds: Credentials, *, to: str, subject: str, body: str,
     return {"id": sent["id"], "thread_id": sent["threadId"]}
 
 
+def read_latest_reply(creds: Credentials, thread_id: str, self_email: str) -> dict | None:
+    """Return the newest inbound message in a thread (not sent by us).
+
+    {from, date, body} or None if the only messages are our own outreach.
+    """
+    import base64
+
+    svc = _gmail(creds)
+    thread = svc.users().threads().get(userId="me", id=thread_id, format="full").execute()
+    messages = thread.get("messages", [])
+    for msg in reversed(messages):  # newest first
+        headers = {h["name"].lower(): h["value"] for h in msg["payload"].get("headers", [])}
+        sender = headers.get("from", "")
+        if self_email.lower() in sender.lower():
+            continue  # skip our own outreach
+        return {
+            "from": sender,
+            "date": headers.get("date", ""),
+            "body": _extract_body(msg["payload"], base64),
+        }
+    return None
+
+
+def _extract_body(payload, base64) -> str:
+    """Pull plain-text from a Gmail message payload (walks multipart)."""
+    def decode(data: str) -> str:
+        return base64.urlsafe_b64decode(data.encode()).decode("utf-8", errors="replace")
+
+    if payload.get("mimeType") == "text/plain" and payload.get("body", {}).get("data"):
+        return decode(payload["body"]["data"])
+    for part in payload.get("parts", []) or []:
+        if part.get("mimeType") == "text/plain" and part.get("body", {}).get("data"):
+            return decode(part["body"]["data"])
+    for part in payload.get("parts", []) or []:
+        got = _extract_body(part, base64)
+        if got:
+            return got
+    return ""
+
+
 def primary_email(creds: Credentials) -> str:
     """The primary calendar's id is the account's email address."""
     return _service(creds).calendarList().get(calendarId="primary").execute()["id"]

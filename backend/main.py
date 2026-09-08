@@ -18,12 +18,14 @@ from api.availability import router as availability_router  # noqa: E402
 from api.jobs import router as jobs_router  # noqa: E402
 from api.slots import router as slots_router  # noqa: E402
 from api.outreach import router as outreach_router  # noqa: E402
+from api.replies import router as replies_router  # noqa: E402
 
 app.include_router(auth_router)
 app.include_router(availability_router)
 app.include_router(jobs_router)
 app.include_router(slots_router)
 app.include_router(outreach_router)
+app.include_router(replies_router)
 
 @app.get("/health")
 async def health():

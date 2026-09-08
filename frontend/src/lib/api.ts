@@ -103,3 +103,17 @@ export const previewOutreach = (jobId: number, subject: string, body: string) =>
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ subject, body }),
   }).then(j<Preview>);
+
+// --- Phase 4b: reply parse ---
+export type ReplyParse = {
+  status: "confirm" | "escalate" | "no_reply";
+  reason?: string; reply_from?: string; reply_body?: string;
+  confidence?: number; is_availability_answer?: boolean; note?: string;
+  windows?: { start: string; end: string }[];
+  proposed_slots?: { slot_id: number; start: string; end: string }[];
+  message?: string;
+};
+
+export const parseReply = (jobId: number, candidateId: number) =>
+  fetch(`${BASE}/jobs/${jobId}/replies/${candidateId}/parse`, { method: "POST" })
+    .then(j<ReplyParse>);
