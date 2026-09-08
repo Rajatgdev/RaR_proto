@@ -5,6 +5,7 @@ pydantic-settings
 sqlalchemy[asyncio]>=2.0.33
 asyncpg
 psycopg[binary]>=3.2
+tzdata
 
 # dev
 ruff
