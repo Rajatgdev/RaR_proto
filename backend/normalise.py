@@ -14,11 +14,22 @@ def valid_email(email: str | None) -> bool:
 
 
 def parse_csv(text: str) -> list[dict]:
-    """Accept a CSV with name/email[/phone/timezone] headers (case-insensitive)."""
+    """Accept a CSV with name/email[/phone/timezone] headers (case-insensitive).
+
+    Tolerates messy rows: a row with more fields than headers puts the extras
+    under a None key as a list (csv.DictReader), so skip that key and coerce
+    any non-string cell to a string before stripping.
+    """
     rows: list[dict] = []
     reader = csv.DictReader(io.StringIO(text))
     for row in reader:
-        norm = { (k or "").strip().lower(): (v or "").strip() for k, v in row.items() }
+        norm: dict[str, str] = {}
+        for k, v in row.items():
+            if k is None:            # overflow columns -> ignore
+                continue
+            if isinstance(v, list):  # defensive: coerce a list cell to text
+                v = ",".join(x for x in v if x)
+            norm[k.strip().lower()] = (v or "").strip()
         rows.append({
             "name": norm.get("name") or None,
             "email": norm.get("email") or None,
