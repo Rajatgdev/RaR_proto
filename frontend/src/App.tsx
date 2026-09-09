@@ -1,18 +1,16 @@
 import { useEffect, useState } from "react";
-
 import {
-  approveOutreach, bookSlot, confirmBooking, confirmJob, createJob, generateSlots, getStatus,
-  getTemplate, holdSlot, intake, listSlots, loginUrl, parseReply, previewOutreach, sendOutreach,
-  updateCard,
-  type BookResult, type Card, type GenResult, type Job, type NormResult, type Preview,
-  type ReplyParse, type SendResult, type SlotRow, type Status, type Template,
+  approveOutreach, bookSlot, confirmJob, createJob, generateSlots, getStatus, getTemplate,
+  confirmBooking, getBoard, holdSlot, intake, listSlots, loginUrl, parseReply, previewOutreach, runSweep, sendOutreach, updateCard,
+  type Card, type GenResult, type Job, type NormResult, type SendResult, type SlotRow,
+  type Board, type BoardCandidate, type BookResult, type Preview, type ReplyParse, type Status, type Template,
 } from "./lib/api";
 
 const TZ = "Europe/London";
 
-// Phase 4 complete: setup -> Gate 1 -> slots -> Gate 2 -> send -> read reply ->
-// parse (propose/escalate) -> recruiter Confirm -> real Meet event + both
-// confirmations. The agent proposes; the human commits. Never auto-books.
+// Phase 2: parameter card -> intake -> normalise -> Gate 1.
+// Gate rules: fields lock on confirm; editing re-opens the gate; confirm is
+// blocked while any candidate row is faulty. Availability sits behind the gate.
 export default function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -36,12 +34,15 @@ export default function App() {
   const [replyParse, setReplyParse] = useState<ReplyParse | null>(null);
   const [chosenSlot, setChosenSlot] = useState<number | null>(null);
   const [booked, setBooked] = useState<BookResult | null>(null);
+  const [board, setBoard] = useState<Board | null>(null);
+  const [activeCand, setActiveCand] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     getStatus().then(setStatus).catch((e) => setError(String(e)));
   }, []);
 
+  // auto-dismiss the saved/updated toast
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(null), 2500);
@@ -54,6 +55,7 @@ export default function App() {
     finally { setBusy(false); }
   };
 
+  // Derived gate conditions.
   const hasCandidates = (normResult?.ready.length ?? 0) > 0;
   const hasFaulty = (normResult?.excluded.length ?? 0) > 0;
   const canConfirm = !!card && hasCandidates && !hasFaulty && !confirmed;
@@ -61,14 +63,14 @@ export default function App() {
   const parse = () => run(async () => {
     const j = await createJob(request, TZ);
     setJob(j); setCard(j.card);
-    setConfirmed(false); setNormResult(null); setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setPreview(null); setReplyParse(null); setChosenSlot(null); setBooked(null);
+    setConfirmed(false); setNormResult(null); setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setPreview(null); setReplyParse(null); setChosenSlot(null); setBooked(null); setBoard(null); setActiveCand(null);
   });
 
   const saveCard = () => run(async () => {
     if (!job || !card) return;
     const r = await updateCard(job.job_id, card);
     if (r.status === "draft" && confirmed) setConfirmed(false);  // re-open gate
-    setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setPreview(null); setReplyParse(null); setChosenSlot(null); setBooked(null);
+    setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setPreview(null); setReplyParse(null); setChosenSlot(null); setBooked(null); setBoard(null); setActiveCand(null);
     setToast("Parameter card saved");
   });
 
@@ -77,6 +79,7 @@ export default function App() {
     const r = await intake(job.job_id, csv);
     setNormResult(r);
     setToast(r.summary);
+    // a fresh intake that (re)introduces faults must re-open the gate
     if (r.excluded.length > 0 && confirmed) { setConfirmed(false); setGen(null); setSlots([]); }
   });
 
@@ -85,10 +88,10 @@ export default function App() {
     await updateCard(job.job_id, card);   // persist any last edits (keeps it draft)
     await confirmJob(job.job_id);          // server re-checks candidates + faults
     setConfirmed(true);
-    setToast("Confirmed — slot generation unlocked");
+    setToast("Confirmed — calendar reads unlocked");
   });
 
-  const editAgain = () => { setConfirmed(false); setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setPreview(null); setReplyParse(null); setChosenSlot(null); setBooked(null); setToast("Editing re-opened — confirm again when ready"); };
+  const editAgain = () => { setConfirmed(false); setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setPreview(null); setReplyParse(null); setChosenSlot(null); setBooked(null); setBoard(null); setActiveCand(null); setToast("Editing re-opened — confirm again when ready"); };
 
   const refreshSlots = async (jobId: number) => setSlots(await listSlots(jobId));
 
@@ -96,6 +99,9 @@ export default function App() {
     if (!job) return;
     const g = await generateSlots(job.job_id);
     setGen(g); await refreshSlots(job.job_id);
+    // capture a candidate id to use for the manual hold/book demo
+    const nr = normResult; // ready list already has emails; fetch job for ids
+    void nr;
     const res = await fetch(`${import.meta.env.VITE_API_BASE_URL ?? ""}/jobs/${job.job_id}`).then((r) => r.json());
     setFirstCandidateId(res.candidates?.[0]?.id ?? null);
     setTpl(await getTemplate(job.job_id));   // load outreach template for Gate 2
@@ -120,12 +126,35 @@ export default function App() {
     const r = await sendOutreach(job.job_id);
     setSent(r);
     await refreshSlots(job.job_id);
+    setActiveCand(firstCandidateId);
+    await loadBoard();
     setToast(`Sent ${r.sent} outreach email(s)`);
   });
 
+  const loadBoard = async () => { if (job) setBoard(await getBoard(job.job_id)); };
+
+  const doSweep = () => run(async () => {
+    if (!job) return;
+    const r = await runSweep(job.job_id);
+    await loadBoard(); await refreshSlots(job.job_id);
+    setToast(`Sweep: ${r.holds_expired} holds freed, ${r.followups_sent} follow-ups sent`);
+  });
+
+  const boardParse = (candidateId: number) => run(async () => {
+    if (!job) return;
+    setActiveCand(candidateId);
+    const rp = await parseReply(job.job_id, candidateId);
+    setReplyParse(rp); setBooked(null);
+    setChosenSlot(rp.proposed_slots?.[0]?.slot_id ?? null);
+    await loadBoard();
+    setToast(rp.status === "confirm" ? "Match — review & confirm below"
+      : rp.status === "escalate" ? "Escalated to Needs attention" : "No reply yet");
+  });
+
   const doParseReply = () => run(async () => {
-    if (!job || !firstCandidateId) throw new Error("no candidate to read a reply for");
-    const r = await parseReply(job.job_id, firstCandidateId);
+    const cid = activeCand ?? firstCandidateId;
+    if (!job || !cid) throw new Error("no candidate to read a reply for");
+    const r = await parseReply(job.job_id, cid);
     setReplyParse(r);
     setBooked(null);
     setChosenSlot(r.proposed_slots?.[0]?.slot_id ?? null);
@@ -135,10 +164,11 @@ export default function App() {
   });
 
   const doConfirmBooking = () => run(async () => {
-    if (!job || !firstCandidateId || !chosenSlot) return;
-    const r = await confirmBooking(job.job_id, firstCandidateId, chosenSlot);
+    const cid = activeCand ?? firstCandidateId;
+    if (!job || !cid || !chosenSlot) return;
+    const r = await confirmBooking(job.job_id, cid, chosenSlot);
     setBooked(r);
-    await refreshSlots(job.job_id);
+    await refreshSlots(job.job_id); await loadBoard();
     setToast("Booked — event + Meet created, confirmations sent");
   });
 
@@ -160,11 +190,11 @@ export default function App() {
   const set = <K extends keyof Card>(k: K, v: Card[K]) =>
     setCard((c) => (c ? { ...c, [k]: v } : c));
 
-  const locked = confirmed;
+  const locked = confirmed;  // fields are read-only once confirmed
 
   return (
     <main style={{ fontFamily: "system-ui", maxWidth: 760, margin: "3rem auto", padding: "0 1rem" }}>
-      <h1>Scheduling Agent — Phase 4</h1>
+      <h1>Scheduling Agent — Phase 2</h1>
 
       {!status?.connected ? (
         <a href={loginUrl()}><button style={btn}>Connect Google Calendar</button></a>
@@ -219,7 +249,7 @@ export default function App() {
               reader.onload = () => { setCsv(String(reader.result ?? "")); setToast(`Loaded ${f.name}`); };
               reader.onerror = () => setError(`could not read ${f.name}`);
               reader.readAsText(f);
-              e.target.value = "";
+              e.target.value = "";  // allow re-selecting the same file
             }}
             style={{ marginBottom: 8, display: "block" }} />
           <textarea value={csv} onChange={(e) => setCsv(e.target.value)} rows={4}
@@ -302,7 +332,6 @@ export default function App() {
               onChange={(e) => setTpl({ ...tpl, body: e.target.value })}
               style={{ padding: 8, fontFamily: "inherit" }} />
           </label>
-
           <button style={btnGhost} onClick={doPreview} disabled={busy}>Preview candidate email</button>
           {preview && (
             <div style={{ border: "1px solid #ccd", borderRadius: 8, padding: 12, marginTop: 10, background: "#fafbff" }}>
@@ -311,7 +340,6 @@ export default function App() {
               <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit", margin: 0 }}>{preview.body}</pre>
             </div>
           )}
-
           {!tpl.approved ? (
             <button style={btn} onClick={approve} disabled={busy}>Approve outreach (Gate 2)</button>
           ) : !sent ? (
@@ -335,7 +363,7 @@ export default function App() {
       {sent && (
         <section style={box}>
           <h3>7 · Candidate reply <span style={sm}>(read the reply, parse it, propose or escalate)</span></h3>
-          <p style={sm}>Reads the latest reply for candidate id {firstCandidateId ?? "—"} and runs one LLM parse.</p>
+          <p style={sm}>Reads the latest reply for candidate id {activeCand ?? firstCandidateId ?? "—"} and runs one LLM parse.</p>
           <button style={btn} onClick={doParseReply} disabled={busy}>Read &amp; parse reply</button>
 
           {replyParse && replyParse.status === "no_reply" && (
@@ -394,7 +422,48 @@ export default function App() {
         </section>
       )}
 
+      {board && (
+        <section style={box}>
+          <h3>8 · Status board <span style={sm}>— every candidate, their state, per-candidate actions</span></h3>
+          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+            <button style={btnGhost} onClick={loadBoard} disabled={busy}>Refresh</button>
+            <button style={btn} onClick={doSweep} disabled={busy}>Run sweep now (expire holds + follow-ups)</button>
+          </div>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+            <thead>
+              <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
+                <th style={th}>Candidate</th><th style={th}>State</th><th style={th}>Detail</th><th style={th}>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {board.candidates.map((c: BoardCandidate) => (
+                <tr key={c.candidate_id} style={{ borderBottom: "1px solid #f0f0f0",
+                  background: c.candidate_id === activeCand ? "#f4f8ff" : undefined }}>
+                  <td style={td}>{c.name ?? "(no name)"}<br /><span style={sm}>{c.email}</span></td>
+                  <td style={td}><span style={{ ...chip, background: stateColor(c.status) }}>{c.status_label}</span>
+                    {c.followup_sent && <div style={sm}>follow-up sent</div>}</td>
+                  <td style={td}>
+                    {c.booked_start
+                      ? <>Booked {fmtFull(c.booked_start)}{c.meet_link && <> · <a href={c.meet_link} target="_blank" rel="noreferrer">Meet</a></>}</>
+                      : c.status === "needs_attention"
+                        ? <span style={{ color: "#a00" }}>handle manually</span>
+                        : <span style={sm}>—</span>}
+                  </td>
+                  <td style={td}>
+                    {(c.status === "slots_offered" || c.status === "followup_sent") && (
+                      <button style={btnSm} onClick={() => boardParse(c.candidate_id)} disabled={busy}>Read reply</button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p style={sm}>Reply parse for the chosen candidate shows in section 7 above.</p>
+        </section>
+      )}
+
       {error && <pre style={{ color: "crimson", whiteSpace: "pre-wrap" }}>{error}</pre>}
+
 
       {toast && <div style={toastStyle}>{toast}</div>}
     </main>
@@ -417,6 +486,14 @@ const btnGhost: React.CSSProperties = { ...btn, background: "#f3f3f3" };
 const inp: React.CSSProperties = { padding: 6, fontSize: 14 };
 const chip: React.CSSProperties = { padding: "5px 9px", background: "#eef", borderRadius: 6, fontSize: 13 };
 const sm: React.CSSProperties = { fontSize: 12, color: "#666" };
+const th: React.CSSProperties = { padding: "6px 8px", fontSize: 12, color: "#666", fontWeight: 600 };
+const td: React.CSSProperties = { padding: "8px 8px", verticalAlign: "top" };
+function stateColor(status: string): string {
+  return status === "confirmed" ? "#dfd"
+    : status === "needs_attention" ? "#ffe0e0"
+    : status === "followup_sent" ? "#fff0d6"
+    : status === "slots_offered" ? "#eef" : "#f0f0f0";
+}
 const toastStyle: React.CSSProperties = {
   position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)",
   background: "#222", color: "#fff", padding: "10px 18px", borderRadius: 8, fontSize: 14,

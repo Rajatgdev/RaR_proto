@@ -127,3 +127,18 @@ export const confirmBooking = (jobId: number, candidateId: number, slotId: numbe
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ slot_id: slotId }),
   }).then(j<BookResult>);
+
+// --- Phase 5: status board + sweep ---
+export type BoardCandidate = {
+  candidate_id: number; name: string | null; email: string; status: string;
+  status_label: string; followup_sent: boolean; booked_start: string | null;
+  meet_link: string | null; has_reply_parse: boolean;
+};
+export type Board = { job_id: number; title: string; candidates: BoardCandidate[] };
+
+export const getBoard = (jobId: number) =>
+  fetch(`${BASE}/jobs/${jobId}/board`).then(j<Board>);
+
+export const runSweep = (jobId: number) =>
+  fetch(`${BASE}/jobs/${jobId}/sweep`, { method: "POST" })
+    .then(j<{ holds_expired: number; followups_sent: number }>);
