@@ -63,13 +63,19 @@ def compute_slots(
     work_end: time,
     duration_min: int,
     buffer_min: int,
+    now: datetime | None = None,
+    lead_min: int = 60,
 ) -> list[dict]:
     """Return offerable slots as [{start, end}] ISO-8601 UTC strings.
 
-    Clips to per-day working hours in `tz`, subtracts busy, then cuts fixed
-    duration slots with `buffer_min` between consecutive slots.
+    Clips to per-day working hours in `tz`, subtracts busy, cuts fixed duration
+    slots with `buffer_min` between them, and drops any slot starting before
+    `now + lead_min` so past / too-soon times are never offered.
     """
     zone = ZoneInfo(tz)
+    if now is None:
+        now = datetime.now(UTC)
+    earliest = now + timedelta(minutes=lead_min)
     busy = merge_intervals(
         [(parse_rfc3339(b["start"]), parse_rfc3339(b["end"])) for b in busy_rfc3339]
     )
@@ -82,6 +88,7 @@ def compute_slots(
         for gs, ge in free_gaps(day_start, day_end, busy):
             t = gs
             while t + dur <= ge:
-                slots.append({"start": t.isoformat(), "end": (t + dur).isoformat()})
+                if t >= earliest:  # never offer a past / too-soon slot
+                    slots.append({"start": t.isoformat(), "end": (t + dur).isoformat()})
                 t = t + dur + buf
     return slots

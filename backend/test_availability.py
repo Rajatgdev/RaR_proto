@@ -1,5 +1,5 @@
 """Runnable check: python -m pytest test_availability.py  (or just run it)."""
-from datetime import date, time
+from datetime import date, time, datetime, timezone
 
 from availability import compute_slots
 
@@ -14,6 +14,7 @@ def _slots(busy):
         work_end=time(17, 0),
         duration_min=30,
         buffer_min=10,
+        now=datetime(2026, 9, 6, 0, 0, tzinfo=timezone.utc),
     )
 
 
@@ -35,6 +36,7 @@ def test_weekend_is_skipped():
     slots = compute_slots(
         [], start_day=date(2026, 9, 12), num_days=1, tz="UTC",
         work_start=time(9, 0), work_end=time(17, 0), duration_min=30, buffer_min=10,
+        now=datetime(2026, 9, 6, 0, 0, tzinfo=timezone.utc),
     )
     assert slots == []
 

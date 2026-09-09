@@ -99,6 +99,7 @@ async def generate(job_id: int, db: AsyncSession = Depends(get_session)):
         work_start=time.fromisoformat(card["work_start"]),
         work_end=time.fromisoformat(card["work_end"]),
         duration_min=card["duration_min"], buffer_min=card["buffer_min"],
+        now=datetime.now(UTC),
     )
     offers = fairness_subset(eligible)
 
