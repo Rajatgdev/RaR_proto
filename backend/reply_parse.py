@@ -18,10 +18,11 @@ from config import settings
 CONFIDENCE_THRESHOLD = 0.75
 
 _SYSTEM = """You read a candidate's email reply and decide which of the OFFERED
-interview slots they chose (or whether they proposed a different time).
+interview slots they chose (or whether they proposed a genuinely different time).
 
-You are given a numbered list of offered slots with their exact datetimes. Match
-the candidate's reply to those slots. Return ONLY JSON in exactly this shape:
+You are given a numbered list of offered slots, each labelled with its weekday
+AND date (e.g. "Monday 14 September"). That list is the SOURCE OF TRUTH for which
+weekday maps to which date. Return ONLY JSON in exactly this shape:
 {
   "windows": [{"start": "YYYY-MM-DDTHH:MM:SS", "end": "YYYY-MM-DDTHH:MM:SS"}],
   "confidence": 0.0,
@@ -29,14 +30,17 @@ the candidate's reply to those slots. Return ONLY JSON in exactly this shape:
   "note": "one short line on what you understood"
 }
 Rules:
-- If the candidate clearly picks one or more of the offered slots (by day, date,
-  or time — e.g. "the Tuesday 08 September slot", "Wednesday works"), return a
-  window that spans exactly that slot's start–end, set is_availability_answer=true
-  and confidence high (>=0.8).
-- If they propose a time NOT in the offered list, return that window with lower
-  confidence and is_availability_answer=true.
-- Only set is_availability_answer=false if the message is a question, a decline,
-  or not about scheduling at all.
+- The candidate is replying to an email that offered exactly those slots. If they
+  name a weekday, a date, or a time that appears in the offered list — even bare
+  ("Monday works", "Wednesday is good", "the 1:30 one") — treat it as choosing
+  THAT offered slot. Return a window spanning exactly that slot's start–end, set
+  is_availability_answer=true, confidence high (>=0.8).
+- A bare weekday that matches a weekday in the offered list is a MATCH. Do NOT
+  assume the candidate means a different week — the offered list defines the dates.
+- Only if they name a day/time that is NOT anywhere in the offered list, return
+  that window with lower confidence, is_availability_answer=true.
+- Set is_availability_answer=false ONLY for a question, a decline, or a message
+  that is not about picking a time at all.
 - Times are local to the job timezone; output naive ISO (no offset).
 Output JSON only."""
 
@@ -119,6 +123,30 @@ def _to_naive(iso: str) -> datetime:
     """Parse an ISO string to a naive datetime (drop any tz) for wall-clock compare."""
     dt = datetime.fromisoformat(iso)
     return dt.replace(tzinfo=None)
+
+
+_WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday",
+             "saturday", "sunday"]
+
+
+def deterministic_match(clean_reply: str, slots: list[dict], *, tz: str) -> list[dict]:
+    """String-level backstop for the LLM: if the reply names a weekday that maps
+    to exactly ONE offered slot, return it. Catches bare picks like 'Monday works'
+    that the model sometimes fumbles. Returns [] when ambiguous or no match.
+    """
+    from zoneinfo import ZoneInfo
+    zone = ZoneInfo(tz)
+    low = clean_reply.lower()
+
+    named = [wd for wd in _WEEKDAYS if wd in low]
+    if len(named) != 1:
+        return []  # zero or multiple weekdays named -> let the LLM decide
+
+    wd = named[0]
+    hits = [s for s in slots
+            if datetime.fromisoformat(s["start"]).astimezone(zone)
+            .strftime("%A").lower() == wd]
+    return hits if len(hits) == 1 else []  # only if it uniquely identifies one slot
 
 
 def intersect_slots(parsed: dict, slots: list[dict], *, tz: str) -> list[dict]:

@@ -97,6 +97,21 @@ async def parse_candidate_reply(job_id: int, candidate_id: int,
 
     matched = rp.intersect_slots(parsed, slots, tz=tz)
     decision = rp.decide(parsed, matched)
+
+    # Deterministic backstop: if the LLM escalated but the reply names a weekday
+    # that uniquely maps to one offered slot ("Monday works"), trust the string
+    # match and propose it. Prevents a clear pick from being wrongly escalated.
+    if decision["action"] == "escalate":
+        clean = rp.strip_quoted(reply["body"]) or reply["body"]
+        det = rp.deterministic_match(clean, slots, tz=tz)
+        if det:
+            matched = det
+            parsed["is_availability_answer"] = True
+            parsed["confidence"] = max(parsed["confidence"], 0.8)
+            parsed["note"] = (parsed["note"] + " | matched by weekday").strip(" |")
+            decision = {"action": "confirm", "reason": "weekday uniquely matched an offered slot",
+                        "slots": det}
+            
     outcome = "confirmed" if decision["action"] == "confirm" else "escalated"
 
     await db.execute(
