@@ -1,16 +1,19 @@
 import { useEffect, useState } from "react";
+
 import {
-  approveOutreach, bookSlot, confirmJob, createJob, generateSlots, getStatus, getTemplate,
-  confirmBooking, getBoard, holdSlot, intake, listSlots, loginUrl, parseReply, previewOutreach, runSweep, sendOutreach, updateCard,
-  type Card, type GenResult, type Job, type NormResult, type SendResult, type SlotRow,
-  type Board, type BoardCandidate, type BookResult, type Preview, type ReplyParse, type Status, type Template,
+  approveOutreach, bookSlot, confirmBooking, confirmJob, createJob, generateSlots, getBoard,
+  getStatus, getTemplate, holdSlot, intake, listSlots, loginUrl, parseReply, previewOutreach,
+  runSweep, sendOutreach, updateCard,
+  type Board, type BoardCandidate, type BookResult, type Card, type GenResult, type Job,
+  type NormResult, type Preview, type ReplyParse, type SendResult, type SlotRow, type Status,
+  type Template,
 } from "./lib/api";
 
 const TZ = "Europe/London";
 
-// Phase 2: parameter card -> intake -> normalise -> Gate 1.
-// Gate rules: fields lock on confirm; editing re-opens the gate; confirm is
-// blocked while any candidate row is faulty. Availability sits behind the gate.
+// Phase 5 complete: setup -> Gate 1 -> slots -> Gate 2 -> send -> reply parse ->
+// confirm -> book + Meet + confirmations, plus a status board over every
+// candidate and a sweep (expire holds + one working-hours follow-up).
 export default function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -42,7 +45,6 @@ export default function App() {
     getStatus().then(setStatus).catch((e) => setError(String(e)));
   }, []);
 
-  // auto-dismiss the saved/updated toast
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(null), 2500);
@@ -55,7 +57,6 @@ export default function App() {
     finally { setBusy(false); }
   };
 
-  // Derived gate conditions.
   const hasCandidates = (normResult?.ready.length ?? 0) > 0;
   const hasFaulty = (normResult?.excluded.length ?? 0) > 0;
   const canConfirm = !!card && hasCandidates && !hasFaulty && !confirmed;
@@ -79,7 +80,6 @@ export default function App() {
     const r = await intake(job.job_id, csv);
     setNormResult(r);
     setToast(r.summary);
-    // a fresh intake that (re)introduces faults must re-open the gate
     if (r.excluded.length > 0 && confirmed) { setConfirmed(false); setGen(null); setSlots([]); }
   });
 
@@ -88,7 +88,7 @@ export default function App() {
     await updateCard(job.job_id, card);   // persist any last edits (keeps it draft)
     await confirmJob(job.job_id);          // server re-checks candidates + faults
     setConfirmed(true);
-    setToast("Confirmed — calendar reads unlocked");
+    setToast("Confirmed — slot generation unlocked");
   });
 
   const editAgain = () => { setConfirmed(false); setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setPreview(null); setReplyParse(null); setChosenSlot(null); setBooked(null); setBoard(null); setActiveCand(null); setToast("Editing re-opened — confirm again when ready"); };
@@ -99,9 +99,6 @@ export default function App() {
     if (!job) return;
     const g = await generateSlots(job.job_id);
     setGen(g); await refreshSlots(job.job_id);
-    // capture a candidate id to use for the manual hold/book demo
-    const nr = normResult; // ready list already has emails; fetch job for ids
-    void nr;
     const res = await fetch(`${import.meta.env.VITE_API_BASE_URL ?? ""}/jobs/${job.job_id}`).then((r) => r.json());
     setFirstCandidateId(res.candidates?.[0]?.id ?? null);
     setTpl(await getTemplate(job.job_id));   // load outreach template for Gate 2
@@ -190,11 +187,11 @@ export default function App() {
   const set = <K extends keyof Card>(k: K, v: Card[K]) =>
     setCard((c) => (c ? { ...c, [k]: v } : c));
 
-  const locked = confirmed;  // fields are read-only once confirmed
+  const locked = confirmed;
 
   return (
     <main style={{ fontFamily: "system-ui", maxWidth: 760, margin: "3rem auto", padding: "0 1rem" }}>
-      <h1>Scheduling Agent — Phase 2</h1>
+      <h1>Scheduling Agent — Phase 5</h1>
 
       {!status?.connected ? (
         <a href={loginUrl()}><button style={btn}>Connect Google Calendar</button></a>
@@ -249,7 +246,7 @@ export default function App() {
               reader.onload = () => { setCsv(String(reader.result ?? "")); setToast(`Loaded ${f.name}`); };
               reader.onerror = () => setError(`could not read ${f.name}`);
               reader.readAsText(f);
-              e.target.value = "";  // allow re-selecting the same file
+              e.target.value = "";
             }}
             style={{ marginBottom: 8, display: "block" }} />
           <textarea value={csv} onChange={(e) => setCsv(e.target.value)} rows={4}
@@ -332,6 +329,7 @@ export default function App() {
               onChange={(e) => setTpl({ ...tpl, body: e.target.value })}
               style={{ padding: 8, fontFamily: "inherit" }} />
           </label>
+
           <button style={btnGhost} onClick={doPreview} disabled={busy}>Preview candidate email</button>
           {preview && (
             <div style={{ border: "1px solid #ccd", borderRadius: 8, padding: 12, marginTop: 10, background: "#fafbff" }}>
@@ -340,6 +338,7 @@ export default function App() {
               <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit", margin: 0 }}>{preview.body}</pre>
             </div>
           )}
+
           {!tpl.approved ? (
             <button style={btn} onClick={approve} disabled={busy}>Approve outreach (Gate 2)</button>
           ) : !sent ? (
@@ -464,7 +463,6 @@ export default function App() {
 
       {error && <pre style={{ color: "crimson", whiteSpace: "pre-wrap" }}>{error}</pre>}
 
-
       {toast && <div style={toastStyle}>{toast}</div>}
     </main>
   );
@@ -494,6 +492,7 @@ function stateColor(status: string): string {
     : status === "followup_sent" ? "#fff0d6"
     : status === "slots_offered" ? "#eef" : "#f0f0f0";
 }
+
 const toastStyle: React.CSSProperties = {
   position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)",
   background: "#222", color: "#fff", padding: "10px 18px", borderRadius: 8, fontSize: 14,
