@@ -13,6 +13,7 @@ _LABELS = {
     "not_contacted": "Not contacted",
     "slots_offered": "Slots offered",
     "followup_sent": "Follow-up sent",
+    "reply_received": "Reply received",
     "confirmed": "Confirmed",
     "needs_attention": "Needs attention",
 }

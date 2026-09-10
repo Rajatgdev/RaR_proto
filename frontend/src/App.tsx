@@ -445,12 +445,14 @@ export default function App() {
                   <td style={td}>
                     {c.booked_start
                       ? <>Booked {fmtFull(c.booked_start, board.timezone)}{c.meet_link && <> · <a href={c.meet_link} target="_blank" rel="noreferrer">Meet</a></>}</>
-                      : c.status === "needs_attention"
+                      : c.status === "reply_received"
+                        ? <span style={{ color: "#b26b00", fontWeight: 600 }}>Candidate replied — review</span>
+                        : c.status === "needs_attention"
                         ? <span style={{ color: "#a00" }}>handle manually</span>
                         : <span style={sm}>—</span>}
                   </td>
                   <td style={td}>
-                    {(c.status === "slots_offered" || c.status === "followup_sent") && (
+                    {(c.status === "slots_offered" || c.status === "followup_sent" || c.status === "reply_received") && (
                       <button style={btnSm} onClick={() => boardParse(c.candidate_id)} disabled={busy}>Read reply</button>
                     )}
                   </td>
@@ -490,6 +492,7 @@ const th: React.CSSProperties = { padding: "6px 8px", fontSize: 12, color: "#666
 const td: React.CSSProperties = { padding: "8px 8px", verticalAlign: "top" };
 function stateColor(status: string): string {
   return status === "confirmed" ? "#dfd"
+    : status === "reply_received" ? "#ffd9a8"
     : status === "needs_attention" ? "#ffe0e0"
     : status === "followup_sent" ? "#fff0d6"
     : status === "slots_offered" ? "#eef" : "#f0f0f0";

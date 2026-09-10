@@ -1,5 +1,5 @@
 """Phase 5 sweep body, shared by the Railway Cron entrypoint (jobs/sweep.py) and
-a manual trigger endpoint. Two idempotent jobs, safe to run repeatedly."""
+a manual trigger endpoint. Idempotent jobs, safe to run repeatedly."""
 import json
 from datetime import datetime, timezone
 
@@ -34,7 +34,7 @@ async def expire_holds(db) -> int:
     return len(rows)
 
 
-async def send_followups(db) -> int:
+async def send_followups(db) -> tuple[int, int]:
     now = datetime.now(UTC)
     rows = (
         await db.execute(
@@ -45,10 +45,10 @@ async def send_followups(db) -> int:
                  "FROM candidate c "
                  "JOIN outreach o ON o.candidate_id = c.id AND o.kind='outreach' "
                  "JOIN job j ON j.id = c.job_id "
-                 "WHERE c.status = 'slots_offered' AND c.followup_sent_at IS NULL"))
+                 "WHERE c.status IN ('slots_offered','followup_sent')"))
     ).mappings().all()
     if not rows:
-        return 0
+        return 0, 0
 
     acc = (
         await db.execute(
@@ -56,7 +56,7 @@ async def send_followups(db) -> int:
                  "ORDER BY updated_at DESC LIMIT 1"))
     ).mappings().one_or_none()
     if acc is None:
-        return 0
+        return 0, 0
     creds = gcal.credentials_from_json(acc["credentials"])
     try:
         if gcal.ensure_fresh(creds):
@@ -66,15 +66,40 @@ async def send_followups(db) -> int:
                 {"c": creds.to_json(), "id": acc["id"]})
             await db.commit()
     except Exception:
-        return 0
+        return 0, 0
 
     sent = 0
+    flagged = 0
     for r in rows:
         card = r["params"]
         tz = r["timezone"] or r["job_tz"]
         work_start = card.get("work_start", "09:00")
         work_end = card.get("work_end", "17:00")
 
+        # Reply-awareness (runs every sweep, NOT gated to working hours): if the
+        # candidate has emailed back, never follow up — flag for the recruiter to
+        # read and act (book or re-offer behind an explicit click). read_latest_reply
+        # skips our own outreach/follow-ups (same self_email), so it only returns a
+        # genuine candidate message. On a read error, skip this candidate (safer to
+        # under-nag than to nag someone who may have replied).
+        try:
+            reply = gcal.read_latest_reply(creds, r["thread_id"], acc["email"])
+        except Exception:
+            continue
+        if reply is not None:
+            if r["status"] != "reply_received":
+                await db.execute(
+                    text("UPDATE candidate SET status='reply_received' WHERE id=:c"),
+                    {"c": r["id"]})
+                await db.execute(
+                    text("INSERT INTO event_log (session_id, actor, action, detail) "
+                         "VALUES (:s,'agent','reply_detected', CAST(:d AS JSONB))"),
+                    {"s": r["session_id"], "d": json.dumps({"candidate_id": r["id"]})})
+                await db.commit()
+                flagged += 1
+            continue
+
+        # No reply -> follow-up path (working-hours + exactly-once gated as before).
         if not within_working_hours(now, tz=tz, work_start=work_start, work_end=work_end):
             continue
         cand = {"status": r["status"], "sent_at": r["sent_at"],
@@ -120,11 +145,12 @@ async def send_followups(db) -> int:
         await db.commit()
         sent += 1
 
-    return sent
+    return sent, flagged
 
 
 async def run_sweep(db) -> dict:
     freed = await expire_holds(db)
     await db.commit()
-    followups = await send_followups(db)
-    return {"holds_expired": freed, "followups_sent": followups}
+    followups, replies_flagged = await send_followups(db)
+    return {"holds_expired": freed, "followups_sent": followups,
+            "replies_flagged": replies_flagged}

@@ -10,7 +10,8 @@ async def _main() -> None:
         result = await run_sweep(db)
     await engine.dispose()
     print(f"sweep: holds_expired={result['holds_expired']} "
-          f"followups_sent={result['followups_sent']}")
+          f"followups_sent={result['followups_sent']} "
+          f"replies_flagged={result['replies_flagged']}")
 
 
 def main() -> None:
