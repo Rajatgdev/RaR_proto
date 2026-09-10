@@ -157,3 +157,6 @@ export type ReofferResult = { status: string; candidate_id: number;
   target_time: string; slots_offered: number; slots: { start: string; end: string }[] };
 export const reoffer = (jobId: number, candidateId: number) =>
   fetch(`${BASE}/jobs/${jobId}/reoffer/${candidateId}`, { method: "POST" }).then(j<ReofferResult>);
+
+export type JobEvent = { ts: string; actor: string; action: string; detail: Record<string, unknown> | null };
+export const listEvents = (jobId: number) => fetch(`${BASE}/jobs/${jobId}/events`).then(j<JobEvent[]>);

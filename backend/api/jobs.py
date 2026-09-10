@@ -71,6 +71,26 @@ async def list_jobs(db: AsyncSession = Depends(get_session)):
     return [dict(r) for r in rows]
 
 
+# --- job event timeline (chat thread replay) ----------------------------
+
+@router.get("/{job_id}/events")
+async def job_events(job_id: int, db: AsyncSession = Depends(get_session)):
+    """The job's durable action log, oldest first — the chat thread replays this
+    so a reopened job shows its true history (not lost React state)."""
+    sid = (
+        await db.execute(text("SELECT session_id FROM job WHERE id=:j"), {"j": job_id})
+    ).scalar_one_or_none()
+    if sid is None:
+        raise HTTPException(404, "job not found")
+    rows = (
+        await db.execute(
+            text("SELECT ts, actor, action, detail FROM event_log "
+                 "WHERE session_id=:s ORDER BY ts ASC"), {"s": sid})
+    ).mappings().all()
+    return [{"ts": r["ts"].isoformat(), "actor": r["actor"],
+             "action": r["action"], "detail": r["detail"]} for r in rows]
+
+
 # --- edit the parameter card (recruiter tweaks before confirming) --------
 
 class UpdateCard(BaseModel):

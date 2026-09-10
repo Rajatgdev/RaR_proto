@@ -79,26 +79,36 @@ export function NewJob({ onCreated }: { onCreated: (jobId: number) => void }) {
   }
 
   return (
-    <div style={{ height: "100%", overflow: "auto", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
-      <div style={{ maxWidth: 520, width: "100%" }}>
-        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>Start a new job</div>
-        <div style={{ fontSize: 13.5, color: cvar("ink-muted"), lineHeight: 1.55, marginBottom: 14 }}>
-          Describe the interview in plain English. Helpful to include: <b>role title</b>, <b>interviewer name</b>,
-          <b> duration</b>, <b>working hours</b> (e.g. mornings only), and the <b>booking window</b> (e.g. next 2 weeks).
-          I'll parse it into a parameter card you can review before anything is touched.
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+      <div style={{ flex: 1, overflow: "auto", padding: "26px 22px" }}>
+        <div style={{ maxWidth: 560, margin: "0 auto", display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ fontSize: 13.5, lineHeight: 1.55 }}>
+            Hi — let's set up a new interview. Tell me about it in your own words. It helps if you mention the{" "}
+            <b>role</b>, who's <b>interviewing</b>, how <b>long</b>, any <b>hours</b> to keep to (like mornings only),
+            and the <b>window</b> to book within. I'll turn it into a parameter card you can check before anything happens.
+          </div>
+          <div style={{ fontSize: 12.5, color: cvar("ink-muted") }}>
+            Example: “45-minute frontend designer screen with Sarah, mornings only, over the next two weeks.”
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5, color: cvar("ink-muted") }}>
+            <span>Interviewer timezone</span>
+            <input value={tz} onChange={(e) => setTz(e.target.value)} className="mono"
+              style={{ border: cvar("hair"), borderRadius: cvar("radius"), padding: "5px 8px", fontSize: 12,
+                background: cvar("surface"), width: 160 }} />
+          </div>
+          {err && <div style={{ color: cvar("st-attention"), fontSize: 12.5 }}>{err}</div>}
         </div>
-        <textarea value={req} onChange={(e) => setReq(e.target.value)} rows={4}
-          placeholder={"e.g. 45-minute frontend designer screen with Sarah, mornings only, over the next two weeks"}
-          style={{ width: "100%", resize: "vertical", border: cvar("hair"), borderRadius: cvar("radius"),
-            padding: 12, fontSize: 13.5, background: cvar("surface") }} />
-        <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 10 }}>
-          <label style={{ fontSize: 12.5, color: cvar("ink-muted") }}>Interviewer timezone</label>
-          <input value={tz} onChange={(e) => setTz(e.target.value)}
-            style={{ border: cvar("hair"), borderRadius: cvar("radius"), padding: "6px 9px", fontSize: 12.5,
-              background: cvar("surface"), width: 170 }} className="mono" />
+      </div>
+      <div style={{ borderTop: cvar("hair"), background: cvar("paper"), padding: "12px 16px" }}>
+        <div style={{ maxWidth: 560, margin: "0 auto", display: "flex", gap: 8, alignItems: "flex-end",
+          border: cvar("hair"), borderRadius: cvar("radius-lg"), background: cvar("surface"), padding: 8 }}>
+          <textarea value={req} onChange={(e) => setReq(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); create(); } }}
+            rows={1} placeholder="Describe the interview…"
+            style={{ flex: 1, resize: "none", border: "none", outline: "none", background: "transparent",
+              fontSize: 13.5, padding: "6px 8px", maxHeight: 120 }} />
+          <Btn small onClick={create} disabled={busy || !req.trim()}>{busy ? "Parsing…" : "Send"}</Btn>
         </div>
-        {err && <div style={{ color: cvar("st-attention"), fontSize: 12.5, marginTop: 10 }}>{err}</div>}
-        <div style={{ marginTop: 14 }}><Btn onClick={create} disabled={busy || !req.trim()}>{busy ? "Parsing…" : "Parse into parameter card"}</Btn></div>
       </div>
     </div>
   );

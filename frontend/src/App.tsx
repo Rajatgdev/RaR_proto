@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "./lib/api";
 import { Sidebar, NewJob } from "./components/Sidebar";
-import { JobChat, type Turn } from "./components/JobChat";
+import { JobChat } from "./components/JobChat";
 import { Board } from "./components/Board";
+import { Dashboard } from "./components/Dashboard";
 
 const cvar = (v: string) => `var(--${v})`;
 
@@ -20,7 +21,7 @@ export default function App() {
   const [status, setStatus] = useState<api.Status>({ connected: false, email: null });
   const [bump, setBump] = useState(0);
   // seed turns per newly created job so its chat opens on the Gate-1 card
-  const seeds = useRef<Record<number, Turn[]>>({});
+  const newJobIds = useRef<Set<number>>(new Set());
 
   const refreshJobs = useCallback(async () => {
     try { setJobs(await api.listJobs()); } catch { /* ignore */ }
@@ -31,10 +32,7 @@ export default function App() {
   function openJob(id: number) { setActiveId(id); setCreating(false); setTab("chat"); }
 
   function onCreated(id: number) {
-    seeds.current[id] = [
-      { who: "agent", text: "Here's the parameter card I parsed from your request. Review it and confirm — nothing touches the calendar until you do." },
-      { who: "gate1" },
-    ];
+    newJobIds.current.add(id);
     refreshJobs();
     openJob(id);
   }
@@ -53,7 +51,7 @@ export default function App() {
         {creating ? (
           <NewJob onCreated={onCreated} />
         ) : activeId == null ? (
-          <Empty connected={status.connected} />
+          <Dashboard jobs={jobs} onOpen={openJob} onNew={() => { setCreating(true); setActiveId(null); }} />
         ) : (
           <>
             <div style={{ display: "flex", alignItems: "center", gap: 12, borderBottom: cvar("hair"),
@@ -64,7 +62,7 @@ export default function App() {
             </div>
             <div style={{ flex: 1, minHeight: 0 }}>
               {tab === "chat"
-                ? <JobChat key={activeId} jobId={activeId} seedTurns={seeds.current[activeId]} onBoardChanged={boardChanged} />
+                ? <JobChat key={activeId} jobId={activeId} isNew={newJobIds.current.has(activeId)} onBoardChanged={boardChanged} />
                 : <Board key={`${activeId}-${bump}`} jobId={activeId} onAct={() => setTab("chat")} />}
             </div>
           </>
@@ -81,18 +79,5 @@ function TabBtn({ label, on, onClick }: { label: string; on: boolean; onClick: (
       borderRadius: cvar("radius"), color: on ? cvar("ink") : cvar("ink-subtle"),
       fontWeight: on ? 600 : 500, boxShadow: on ? `inset 0 0 0 1px ${cvar("hairline-2")}` : "none",
     }}>{label}</button>
-  );
-}
-
-function Empty({ connected }: { connected: boolean }) {
-  return (
-    <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
-      <div style={{ maxWidth: 380, textAlign: "center" }}>
-        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>Scheduling agent</div>
-        <div style={{ fontSize: 13.5, color: cvar("ink-muted"), lineHeight: 1.55 }}>
-          {connected ? "Pick a job on the left, or start a new one with +." : "Connect Google from the sidebar, then start a job."}
-        </div>
-      </div>
-    </div>
   );
 }
