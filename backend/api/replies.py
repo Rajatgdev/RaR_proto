@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import gcal
 import reply_parse as rp
 from db.session import get_session
+from tzutil import safe_zone
 
 router = APIRouter(prefix="/jobs/{job_id}/replies", tags=["replies"])
 
@@ -258,9 +259,8 @@ async def confirm_booking(job_id: int, candidate_id: int, body: Confirm,
                      {"c": candidate_id})
 
     # Confirmation emails to both parties (best-effort; booking already committed).
-    from zoneinfo import ZoneInfo
     tz = cand["timezone"] or job["timezone"]
-    when = slot["start_ts"].astimezone(ZoneInfo(tz)).strftime("%A %d %B %Y, %I:%M %p %Z")
+    when = slot["start_ts"].astimezone(safe_zone(tz)).strftime("%A %d %B %Y, %I:%M %p %Z")
     cand_body = (f"Hi {cand['name'] or 'there'},\n\nYou're booked for a {duration}-minute "
                  f"{title} interview with {iv_name} on {when}.\n\n"
                  f"Google Meet: {ev['meet_link']}\n\nSee you then.")

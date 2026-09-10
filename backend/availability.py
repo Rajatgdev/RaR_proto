@@ -4,7 +4,7 @@ No I/O here so it can be tested without Google. All datetimes are timezone-aware
 FreeBusy busy intervals are start-inclusive / end-exclusive; we treat them so.
 """
 from datetime import date, datetime, time, timedelta, timezone
-from zoneinfo import ZoneInfo
+from tzutil import safe_zone
 
 UTC = timezone.utc
 
@@ -72,7 +72,7 @@ def compute_slots(
     slots with `buffer_min` between them, and drops any slot starting before
     `now + lead_min` so past / too-soon times are never offered.
     """
-    zone = ZoneInfo(tz)
+    zone = safe_zone(tz)
     if now is None:
         now = datetime.now(UTC)
     earliest = now + timedelta(minutes=lead_min)

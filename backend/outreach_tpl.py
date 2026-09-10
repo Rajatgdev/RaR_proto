@@ -5,7 +5,7 @@ their name, the interviewer, and the offered slots shown in the candidate's own
 timezone. Placeholders: {name} {interviewer} {slots} {duration} {job}.
 """
 from datetime import datetime
-from zoneinfo import ZoneInfo
+from tzutil import safe_zone
 
 DEFAULT_SUBJECT = "Interview scheduling — {job}"
 
@@ -26,7 +26,7 @@ The scheduling team
 
 def format_slots(slots: list[dict], tz: str) -> str:
     """slots: [{start,end}] ISO UTC -> a readable bulleted list in the candidate's tz."""
-    zone = ZoneInfo(tz)
+    zone = safe_zone(tz)
     lines = []
     for s in slots:
         start = datetime.fromisoformat(s["start"]).astimezone(zone)

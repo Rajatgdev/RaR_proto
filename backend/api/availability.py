@@ -4,11 +4,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-from zoneinfo import ZoneInfo
 
 import gcal
 from availability import compute_slots
 from db.session import get_session
+from tzutil import safe_zone
 
 router = APIRouter(prefix="/availability", tags=["availability"])
 
@@ -52,7 +52,7 @@ async def availability(
         raise HTTPException(400, "no Google account connected")
 
     try:
-        zone = ZoneInfo(tz)
+        zone = safe_zone(tz)
     except Exception:
         raise HTTPException(422, f"unknown timezone: {tz}")
     ws, we = time.fromisoformat(work_start), time.fromisoformat(work_end)

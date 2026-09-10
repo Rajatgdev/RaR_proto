@@ -1,11 +1,11 @@
 """Pure decision logic for the Phase 5 sweep. No I/O so it's testable."""
 from datetime import datetime, time
-from zoneinfo import ZoneInfo
+from tzutil import safe_zone
 
 
 def within_working_hours(now: datetime, *, tz: str, work_start: str, work_end: str,
                          weekdays_only: bool = True) -> bool:
-    local = now.astimezone(ZoneInfo(tz))
+    local = now.astimezone(safe_zone(tz))
     if weekdays_only and local.weekday() >= 5:
         return False
     ws = time.fromisoformat(work_start)

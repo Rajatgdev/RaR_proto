@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import normalise as norm
 import paramcard
 from db.session import get_session
+from tzutil import safe_tz_name
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -40,7 +41,7 @@ async def create_job(body: CreateJob, db: AsyncSession = Depends(get_session)):
         await db.execute(
             text("INSERT INTO job (session_id, title, timezone, params, status) "
                  "VALUES (:s, :t, :tz, CAST(:p AS JSONB), 'draft') RETURNING id"),
-            {"s": session_id, "t": card["job_title"], "tz": body.timezone,
+            {"s": session_id, "t": card["job_title"], "tz": safe_tz_name(body.timezone),
              "p": json.dumps(card)},
         )
     ).scalar_one()

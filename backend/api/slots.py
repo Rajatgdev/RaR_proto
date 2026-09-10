@@ -14,12 +14,12 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-from zoneinfo import ZoneInfo
 
 import gcal
 from availability import compute_slots
 from db.session import get_session
 from fairness import fairness_subset
+from tzutil import safe_zone
 
 router = APIRouter(prefix="/jobs/{job_id}/slots", tags=["slots"])
 
@@ -80,7 +80,7 @@ async def generate(job_id: int, db: AsyncSession = Depends(get_session)):
             {"c": creds.to_json(), "id": account["id"]})
         await db.commit()
 
-    zone = ZoneInfo(tz or "Europe/London")
+    zone = safe_zone(tz or "Europe/London")
     start_day = date.today()
     days = card["window_days"]
     time_min = datetime.combine(start_day, time(0, 0), zone).astimezone(UTC).isoformat()

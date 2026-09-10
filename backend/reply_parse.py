@@ -13,6 +13,7 @@ import json
 from datetime import datetime
 
 from config import settings
+from tzutil import safe_zone
 
 # Tunable during testing (build-plan says make it a config value).
 CONFIDENCE_THRESHOLD = 0.75
@@ -66,8 +67,7 @@ def strip_quoted(text: str) -> str:
 
 
 def _slot_lines(slots: list[dict], tz: str) -> str:
-    from zoneinfo import ZoneInfo
-    zone = ZoneInfo(tz)
+    zone = safe_zone(tz)
     lines = []
     for i, s in enumerate(slots, 1):
         st = datetime.fromisoformat(s["start"]).astimezone(zone)
@@ -134,8 +134,7 @@ def deterministic_match(clean_reply: str, slots: list[dict], *, tz: str) -> list
     to exactly ONE offered slot, return it. Catches bare picks like 'Monday works'
     that the model sometimes fumbles. Returns [] when ambiguous or no match.
     """
-    from zoneinfo import ZoneInfo
-    zone = ZoneInfo(tz)
+    zone = safe_zone(tz)
     low = clean_reply.lower()
 
     named = [wd for wd in _WEEKDAYS if wd in low]
@@ -154,8 +153,7 @@ def intersect_slots(parsed: dict, slots: list[dict], *, tz: str) -> list[dict]:
     window. `slots` items: {slot_id, start, end} where start/end are ISO UTC.
     Windows are wall-clock in `tz`; compare in that zone.
     """
-    from zoneinfo import ZoneInfo
-    zone = ZoneInfo(tz)
+    zone = safe_zone(tz)
 
     wins = []
     for w in parsed["windows"]:

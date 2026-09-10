@@ -8,7 +8,6 @@ mirroring the outreach/confirm gates. No booking happens here.
 """
 import json
 from datetime import date, datetime, time, timedelta, timezone
-from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -21,6 +20,7 @@ import reply_parse as rp
 from availability import compute_slots
 from fairness import slots_near_target
 from db.session import get_session
+from tzutil import safe_zone
 
 router = APIRouter(prefix="/jobs/{job_id}/reoffer", tags=["reoffer"])
 
@@ -126,7 +126,7 @@ async def reoffer(job_id: int, candidate_id: int, db: AsyncSession = Depends(get
     if iv is None:
         raise HTTPException(422, "no interviewer on this job; generate slots first")
 
-    zone = ZoneInfo(job["timezone"] or "Europe/London")
+    zone = safe_zone(job["timezone"] or "Europe/London")
     start_day = date.today()
     days = card["window_days"]
     time_min = datetime.combine(start_day, time(0, 0), zone).astimezone(UTC).isoformat()
@@ -185,7 +185,7 @@ async def reoffer(job_id: int, candidate_id: int, db: AsyncSession = Depends(get
                           "offered": len(created)})})
     await db.commit()
 
-    when_target = datetime.fromisoformat(target_iso).astimezone(ZoneInfo(tz)).strftime(
+    when_target = datetime.fromisoformat(target_iso).astimezone(safe_zone(tz)).strftime(
         "%A %d %B, %I:%M %p %Z")
     return {"status": "reoffered", "candidate_id": candidate_id,
             "target_time": when_target, "slots_offered": len(created),
