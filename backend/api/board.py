@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+from zoneinfo import ZoneInfo
 
 from db.session import get_session
 from sweep import run_sweep
@@ -20,7 +21,7 @@ _LABELS = {
 @router.get("/board")
 async def board(job_id: int, db: AsyncSession = Depends(get_session)):
     job = (
-        await db.execute(text("SELECT id, title, status FROM job WHERE id=:j"), {"j": job_id})
+        await db.execute(text("SELECT id, title, status, timezone FROM job WHERE id=:j"), {"j": job_id})
     ).mappings().one_or_none()
     if job is None:
         raise HTTPException(404, "job not found")
@@ -48,11 +49,13 @@ async def board(job_id: int, db: AsyncSession = Depends(get_session)):
             "status": r["status"],
             "status_label": _LABELS.get(r["status"], r["status"]),
             "followup_sent": r["followup_sent_at"] is not None,
-            "booked_start": r["booked_start"].isoformat() if r["booked_start"] else None,
+            "booked_start": (r["booked_start"].astimezone(ZoneInfo(job["timezone"])).isoformat()
+                             if r["booked_start"] else None),
             "meet_link": r["meet_link"],
             "has_reply_parse": r["last_parse"] is not None,
         })
-    return {"job_id": job_id, "title": job["title"], "candidates": candidates}
+    return {"job_id": job_id, "title": job["title"], "timezone": job["timezone"],
+            "candidates": candidates}
 
 
 @router.post("/sweep")

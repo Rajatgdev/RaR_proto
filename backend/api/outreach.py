@@ -1,13 +1,14 @@
 """Phase 4a: Outreach + Approval Gate 2.
 
 Gate 2 is a single approval of the outreach template + the generated slot pool.
-Only after approval can the agent send. Sending places a soft hold on each
-offered slot for the candidate, emails them via gmail.send, and records the
-outreach row with the Gmail thread_id (so replies can be matched in 4b).
+Only after approval can the agent send. Sending emails each candidate via
+gmail.send and records the outreach row with the Gmail thread_id (so replies
+can be matched in 4b). Slots are OFFERED to every candidate but not held at
+send time — a slot has a single owner, so the atomic claim at booking
+(/replies/{cid}/confirm, accepts status='available') is the race guard, with
+UNIQUE(slot_id) as the final backstop (Phase 3).
 """
 import json
-import uuid
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -164,24 +165,12 @@ async def send(job_id: int, db: AsyncSession = Depends(get_session)):
     if not candidates:
         raise HTTPException(422, "no candidates in 'not_contacted' state to email")
 
-    ttl = int(job["hold_ttl_min"])
+    # Option A: offer the same pool to every candidate; do NOT hold at send time.
+    # A slot has one owner, so pre-holding can serve only the first candidate.
+    # The atomic claim in /replies/{cid}/confirm (accepts status='available') is
+    # the race guard, with UNIQUE(slot_id) as the final backstop (Phase 3).
     sent = []
     for c in candidates:
-        held_ids = []
-        for s in slots:
-            hid = str(uuid.uuid4())
-            row = (
-                await db.execute(
-                    text("UPDATE slot SET status='held', hold_id=CAST(:h AS UUID), "
-                         "hold_owner=:c, hold_expires_at = now() + make_interval(mins => :ttl), "
-                         "version = version + 1 "
-                         "WHERE id=:sid AND (status='available' OR "
-                         "(status='held' AND hold_expires_at <= now())) RETURNING id"),
-                    {"h": hid, "c": c["id"], "ttl": ttl, "sid": s["id"]})
-            ).scalar_one_or_none()
-            if row is not None:
-                held_ids.append(row)
-
         subject, mail_body = tpl.render(
             job["outreach_subject"], job["outreach_body"],
             name=c["name"], interviewer=interviewer, job=card.get("job_title", "the role"),
@@ -201,7 +190,7 @@ async def send(job_id: int, db: AsyncSession = Depends(get_session)):
             text("UPDATE candidate SET status='slots_offered' WHERE id = :id"),
             {"id": c["id"]})
         sent.append({"candidate_id": c["id"], "email": c["email"],
-                     "thread_id": res["thread_id"], "held": len(held_ids)})
+                     "thread_id": res["thread_id"], "offered": len(slot_dicts)})
 
     await db.execute(
         text("INSERT INTO event_log (session_id, actor, action, detail) "

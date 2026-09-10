@@ -83,7 +83,7 @@ export const bookSlot = (jobId: number, slotId: number, candidateId: number, hol
 // --- Phase 4a: outreach + Gate 2 ---
 export type Template = { subject: string; body: string; approved: boolean };
 export type SendResult = { sent: number;
-  candidates: { candidate_id: number; email: string; thread_id: string; held: number }[] };
+  candidates: { candidate_id: number; email: string; thread_id: string; offered: number }[] };
 
 export const getTemplate = (jobId: number) =>
   fetch(`${BASE}/jobs/${jobId}/outreach/template`).then(j<Template>);
@@ -134,7 +134,7 @@ export type BoardCandidate = {
   status_label: string; followup_sent: boolean; booked_start: string | null;
   meet_link: string | null; has_reply_parse: boolean;
 };
-export type Board = { job_id: number; title: string; candidates: BoardCandidate[] };
+export type Board = { job_id: number; title: string; timezone: string; candidates: BoardCandidate[] };
 
 export const getBoard = (jobId: number) =>
   fetch(`${BASE}/jobs/${jobId}/board`).then(j<Board>);
