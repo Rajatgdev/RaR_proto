@@ -1,504 +1,98 @@
-import { useEffect, useState } from "react";
-import {
-  approveOutreach, bookSlot, confirmJob, createJob, generateSlots, getStatus, getTemplate,
-  confirmBooking, getBoard, holdSlot, intake, listSlots, loginUrl, parseReply, previewOutreach, runSweep, sendOutreach, updateCard,
-  type Card, type GenResult, type Job, type NormResult, type SendResult, type SlotRow,
-  type Board, type BoardCandidate, type BookResult, type Preview, type ReplyParse, type Status, type Template,
-} from "./lib/api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import * as api from "./lib/api";
+import { Sidebar, NewJob } from "./components/Sidebar";
+import { JobChat, type Turn } from "./components/JobChat";
+import { Board } from "./components/Board";
 
-const TZ = "Europe/London";
+const cvar = (v: string) => `var(--${v})`;
 
-// Phase 2: parameter card -> intake -> normalise -> Gate 1.
-// Gate rules: fields lock on confirm; editing re-opens the gate; confirm is
-// blocked while any candidate row is faulty. Availability sits behind the gate.
+/* Shell: sidebar of job-chats → active job with Chat | Board tabs. "New" opens
+   the NewJob composer; on create, we open the job's chat seeded with its Gate-1
+   parameter card. A board-changed bump lets the Board reload after chat actions. */
+
+type Tab = "chat" | "board";
+
 export default function App() {
-  const [status, setStatus] = useState<Status | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
+  const [jobs, setJobs] = useState<api.JobSummary[]>([]);
+  const [activeId, setActiveId] = useState<number | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [tab, setTab] = useState<Tab>("chat");
+  const [status, setStatus] = useState<api.Status>({ connected: false, email: null });
+  const [bump, setBump] = useState(0);
+  // seed turns per newly created job so its chat opens on the Gate-1 card
+  const seeds = useRef<Record<number, Turn[]>>({});
 
-  const [request, setRequest] = useState(
-    "30-minute Google Meet screens with Jamie over the next two weeks, mornings only, 10-minute gaps"
-  );
-  const [job, setJob] = useState<Job | null>(null);
-  const [card, setCard] = useState<Card | null>(null);
-  const [csv, setCsv] = useState("name,email\nAlex Candidate,alex@example.com\n");
-  const [normResult, setNormResult] = useState<NormResult | null>(null);
-  const [confirmed, setConfirmed] = useState(false);
-  const [gen, setGen] = useState<GenResult | null>(null);
-  const [slots, setSlots] = useState<SlotRow[]>([]);
-  const [holds, setHolds] = useState<Record<number, string>>({});
-  const [firstCandidateId, setFirstCandidateId] = useState<number | null>(null);
-  const [tpl, setTpl] = useState<Template | null>(null);
-  const [sent, setSent] = useState<SendResult | null>(null);
-  const [preview, setPreview] = useState<Preview | null>(null);
-  const [replyParse, setReplyParse] = useState<ReplyParse | null>(null);
-  const [chosenSlot, setChosenSlot] = useState<number | null>(null);
-  const [booked, setBooked] = useState<BookResult | null>(null);
-  const [board, setBoard] = useState<Board | null>(null);
-  const [activeCand, setActiveCand] = useState<number | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    getStatus().then(setStatus).catch((e) => setError(String(e)));
+  const refreshJobs = useCallback(async () => {
+    try { setJobs(await api.listJobs()); } catch { /* ignore */ }
   }, []);
 
-  // auto-dismiss the saved/updated toast
-  useEffect(() => {
-    if (!toast) return;
-    const t = setTimeout(() => setToast(null), 2500);
-    return () => clearTimeout(t);
-  }, [toast]);
+  useEffect(() => { api.getStatus().then(setStatus).catch(() => {}); refreshJobs(); }, [refreshJobs]);
 
-  const run = async (fn: () => Promise<void>) => {
-    setError(null); setBusy(true);
-    try { await fn(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-    finally { setBusy(false); }
-  };
+  function openJob(id: number) { setActiveId(id); setCreating(false); setTab("chat"); }
 
-  // Derived gate conditions.
-  const hasCandidates = (normResult?.ready.length ?? 0) > 0;
-  const hasFaulty = (normResult?.excluded.length ?? 0) > 0;
-  const canConfirm = !!card && hasCandidates && !hasFaulty && !confirmed;
+  function onCreated(id: number) {
+    seeds.current[id] = [
+      { who: "agent", text: "Here's the parameter card I parsed from your request. Review it and confirm — nothing touches the calendar until you do." },
+      { who: "gate1" },
+    ];
+    refreshJobs();
+    openJob(id);
+  }
 
-  const parse = () => run(async () => {
-    const j = await createJob(request, TZ);
-    setJob(j); setCard(j.card);
-    setConfirmed(false); setNormResult(null); setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setPreview(null); setReplyParse(null); setChosenSlot(null); setBooked(null); setBoard(null); setActiveCand(null);
-  });
+  const boardChanged = useCallback(() => { setBump((b) => b + 1); refreshJobs(); }, [refreshJobs]);
 
-  const saveCard = () => run(async () => {
-    if (!job || !card) return;
-    const r = await updateCard(job.job_id, card);
-    if (r.status === "draft" && confirmed) setConfirmed(false);  // re-open gate
-    setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setPreview(null); setReplyParse(null); setChosenSlot(null); setBooked(null); setBoard(null); setActiveCand(null);
-    setToast("Parameter card saved");
-  });
-
-  const loadIntake = () => run(async () => {
-    if (!job) return;
-    const r = await intake(job.job_id, csv);
-    setNormResult(r);
-    setToast(r.summary);
-    // a fresh intake that (re)introduces faults must re-open the gate
-    if (r.excluded.length > 0 && confirmed) { setConfirmed(false); setGen(null); setSlots([]); }
-  });
-
-  const doConfirm = () => run(async () => {
-    if (!job || !card) return;
-    await updateCard(job.job_id, card);   // persist any last edits (keeps it draft)
-    await confirmJob(job.job_id);          // server re-checks candidates + faults
-    setConfirmed(true);
-    setToast("Confirmed — calendar reads unlocked");
-  });
-
-  const editAgain = () => { setConfirmed(false); setGen(null); setSlots([]); setHolds({}); setTpl(null); setSent(null); setPreview(null); setReplyParse(null); setChosenSlot(null); setBooked(null); setBoard(null); setActiveCand(null); setToast("Editing re-opened — confirm again when ready"); };
-
-  const refreshSlots = async (jobId: number) => setSlots(await listSlots(jobId));
-
-  const genSlots = () => run(async () => {
-    if (!job) return;
-    const g = await generateSlots(job.job_id);
-    setGen(g); await refreshSlots(job.job_id);
-    // capture a candidate id to use for the manual hold/book demo
-    const nr = normResult; // ready list already has emails; fetch job for ids
-    void nr;
-    const res = await fetch(`${import.meta.env.VITE_API_BASE_URL ?? ""}/jobs/${job.job_id}`).then((r) => r.json());
-    setFirstCandidateId(res.candidates?.[0]?.id ?? null);
-    setTpl(await getTemplate(job.job_id));   // load outreach template for Gate 2
-    setSent(null);
-    setToast(`Offered ${g.offered} of ${g.eligible} eligible`);
-  });
-
-  const doPreview = () => run(async () => {
-    if (!job || !tpl) return;
-    setPreview(await previewOutreach(job.job_id, tpl.subject, tpl.body));
-  });
-
-  const approve = () => run(async () => {
-    if (!job || !tpl) return;
-    const r = await approveOutreach(job.job_id, tpl.subject, tpl.body);
-    setTpl({ ...tpl, approved: true });
-    setToast(`Gate 2 approved — pool of ${r.pool_size}`);
-  });
-
-  const doSend = () => run(async () => {
-    if (!job) return;
-    const r = await sendOutreach(job.job_id);
-    setSent(r);
-    await refreshSlots(job.job_id);
-    setActiveCand(firstCandidateId);
-    await loadBoard();
-    setToast(`Sent ${r.sent} outreach email(s)`);
-  });
-
-  const loadBoard = async () => { if (job) setBoard(await getBoard(job.job_id)); };
-
-  const doSweep = () => run(async () => {
-    if (!job) return;
-    const r = await runSweep(job.job_id);
-    await loadBoard(); await refreshSlots(job.job_id);
-    setToast(`Sweep: ${r.holds_expired} holds freed, ${r.followups_sent} follow-ups sent`);
-  });
-
-  const boardParse = (candidateId: number) => run(async () => {
-    if (!job) return;
-    setActiveCand(candidateId);
-    const rp = await parseReply(job.job_id, candidateId);
-    setReplyParse(rp); setBooked(null);
-    setChosenSlot(rp.proposed_slots?.[0]?.slot_id ?? null);
-    await loadBoard();
-    setToast(rp.status === "confirm" ? "Match — review & confirm below"
-      : rp.status === "escalate" ? "Escalated to Needs attention" : "No reply yet");
-  });
-
-  const doParseReply = () => run(async () => {
-    const cid = activeCand ?? firstCandidateId;
-    if (!job || !cid) throw new Error("no candidate to read a reply for");
-    const r = await parseReply(job.job_id, cid);
-    setReplyParse(r);
-    setBooked(null);
-    setChosenSlot(r.proposed_slots?.[0]?.slot_id ?? null);
-    setToast(r.status === "confirm" ? "High-confidence match — review & confirm"
-      : r.status === "escalate" ? "Escalated to Needs attention"
-      : "No reply yet");
-  });
-
-  const doConfirmBooking = () => run(async () => {
-    const cid = activeCand ?? firstCandidateId;
-    if (!job || !cid || !chosenSlot) return;
-    const r = await confirmBooking(job.job_id, cid, chosenSlot);
-    setBooked(r);
-    await refreshSlots(job.job_id); await loadBoard();
-    setToast("Booked — event + Meet created, confirmations sent");
-  });
-
-  const hold = (slotId: number) => run(async () => {
-    if (!job || !firstCandidateId) throw new Error("no candidate to hold with");
-    const h = await holdSlot(job.job_id, slotId, firstCandidateId);
-    setHolds((m) => ({ ...m, [slotId]: h.hold_id }));
-    await refreshSlots(job.job_id);
-    setToast("Slot held");
-  });
-
-  const bookIt = (slotId: number) => run(async () => {
-    if (!job || !firstCandidateId) return;
-    await bookSlot(job.job_id, slotId, firstCandidateId, holds[slotId]);
-    await refreshSlots(job.job_id);
-    setToast("Slot booked");
-  });
-
-  const set = <K extends keyof Card>(k: K, v: Card[K]) =>
-    setCard((c) => (c ? { ...c, [k]: v } : c));
-
-  const locked = confirmed;  // fields are read-only once confirmed
+  const active = jobs.find((j) => j.id === activeId) ?? null;
 
   return (
-    <main style={{ fontFamily: "system-ui", maxWidth: 760, margin: "3rem auto", padding: "0 1rem" }}>
-      <h1>Scheduling Agent — Phase 5</h1>
+    <div style={{ height: "100%", display: "grid", gridTemplateColumns: "210px 1fr" }}>
+      <Sidebar jobs={jobs} activeId={creating ? null : activeId}
+        onSelect={openJob} onNew={() => { setCreating(true); setActiveId(null); }}
+        connected={status.connected} email={status.email} />
 
-      {!status?.connected ? (
-        <a href={loginUrl()}><button style={btn}>Connect Google Calendar</button></a>
-      ) : (
-        <p>Connected as <strong>{status.email}</strong> <a href={loginUrl()} style={sm}>(reconnect)</a></p>
-      )}
-
-      <section style={box}>
-        <h3>1 · Describe the interviews</h3>
-        <textarea value={request} onChange={(e) => setRequest(e.target.value)}
-          rows={3} style={{ width: "100%", padding: 8, fontFamily: "inherit" }} />
-        <button style={btn} onClick={parse} disabled={busy}>Parse into parameter card</button>
-      </section>
-
-      {card && (
-        <section style={box}>
-          <h3>2 · Parameter card <span style={sm}>{locked ? "(locked — confirmed)" : "(edit any field)"}</span></h3>
-          {card.note && <p style={sm}>Agent: {card.note}</p>}
-          <div style={grid}>
-            <Field label="Job title"><input style={inp} value={card.job_title} disabled={locked}
-              onChange={(e) => set("job_title", e.target.value)} /></Field>
-            <Field label="Duration (min)"><select style={inp} value={card.duration_min} disabled={locked}
-              onChange={(e) => set("duration_min", Number(e.target.value))}>
-              {[30, 45, 60].map((d) => <option key={d} value={d}>{d}</option>)}</select></Field>
-            <Field label="Window (working days)"><input style={inp} type="number" value={card.window_days} disabled={locked}
-              onChange={(e) => set("window_days", Number(e.target.value))} /></Field>
-            <Field label="Buffer (min)"><input style={inp} type="number" value={card.buffer_min} disabled={locked}
-              onChange={(e) => set("buffer_min", Number(e.target.value))} /></Field>
-            <Field label="Work start"><input style={inp} value={card.work_start} disabled={locked}
-              onChange={(e) => set("work_start", e.target.value)} /></Field>
-            <Field label="Work end"><input style={inp} value={card.work_end} disabled={locked}
-              onChange={(e) => set("work_end", e.target.value)} /></Field>
-            <Field label="Max / interviewer / day"><input style={inp} type="number"
-              value={card.max_per_interviewer_per_day} disabled={locked}
-              onChange={(e) => set("max_per_interviewer_per_day", Number(e.target.value))} /></Field>
-          </div>
-          <p style={sm}>Interviewers: {card.interviewers.map((i) => i.name).join(", ") || "—"}</p>
-          {!locked
-            ? <button style={btnGhost} onClick={saveCard} disabled={busy}>Save edits</button>
-            : <button style={btnGhost} onClick={editAgain} disabled={busy}>Edit (re-opens Gate 1)</button>}
-        </section>
-      )}
-
-      {job && (
-        <section style={box}>
-          <h3>3 · Candidates <span style={sm}>(upload a CSV or type below: name,email[,phone,timezone])</span></h3>
-          <input type="file" accept=".csv,text/csv" disabled={locked}
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (!f) return;
-              const reader = new FileReader();
-              reader.onload = () => { setCsv(String(reader.result ?? "")); setToast(`Loaded ${f.name}`); };
-              reader.onerror = () => setError(`could not read ${f.name}`);
-              reader.readAsText(f);
-              e.target.value = "";  // allow re-selecting the same file
-            }}
-            style={{ marginBottom: 8, display: "block" }} />
-          <textarea value={csv} onChange={(e) => setCsv(e.target.value)} rows={4}
-            disabled={locked}
-            style={{ width: "100%", padding: 8, fontFamily: "monospace" }} />
-          <button style={btn} onClick={loadIntake} disabled={busy || locked}>Normalise candidates</button>
-          {normResult && (
-            <div style={{ marginTop: 10 }}>
-              <strong>{normResult.summary}</strong>
-              <ul>
-                {normResult.ready.map((c) => (
-                  <li key={c.email}>{c.name ?? "(no name)"} · {c.email}
-                    {" "}<em style={sm}>· {c.timezone}{c.timezone_assumed ? " (assumed)" : ""}</em></li>
-                ))}
-                {normResult.excluded.map((c, i) => (
-                  <li key={i} style={{ color: "#a00" }}>{c.email ?? "(no email)"} — {c.reason}</li>
-                ))}
-              </ul>
+      <main style={{ display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, background: cvar("paper") }}>
+        {creating ? (
+          <NewJob onCreated={onCreated} />
+        ) : activeId == null ? (
+          <Empty connected={status.connected} />
+        ) : (
+          <>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, borderBottom: cvar("hair"),
+              padding: "0 18px", height: 46, background: cvar("surface") }}>
+              <div style={{ fontSize: 14, fontWeight: 600, marginRight: 6 }}>{active?.title ?? "Job"}</div>
+              <TabBtn label="Chat" on={tab === "chat"} onClick={() => setTab("chat")} />
+              <TabBtn label="Board" on={tab === "board"} onClick={() => { setTab("board"); }} />
             </div>
-          )}
-        </section>
-      )}
-
-      {job && (
-        <section style={{ ...box, borderColor: confirmed ? "#3a3" : "#e5a300" }}>
-          <h3>4 · Approval Gate 1 <span style={sm}>— nothing touches a calendar until you confirm</span></h3>
-          {!confirmed ? (
-            <>
-              <button style={btn} onClick={doConfirm} disabled={busy || !canConfirm}>
-                Confirm parameter card
-              </button>
-              {!hasCandidates && <p style={sm}>Add candidates and run Normalise first.</p>}
-              {hasFaulty && <p style={{ ...sm, color: "#a00" }}>
-                Fix the flagged candidate row(s) and re-run Normalise before you can confirm.
-              </p>}
-            </>
-          ) : (
-            <>
-              <p style={{ color: "#3a3" }}>✓ Confirmed. Slot generation unlocked.</p>
-              <button style={btn} onClick={genSlots} disabled={busy}>Generate offer slots</button>
-              {gen && <p style={sm}>{gen.eligible} eligible in window → offered {gen.offered} (max 5, spread for fairness)</p>}
-            </>
-          )}
-        </section>
-      )}
-
-      {slots.length > 0 && (
-        <section style={box}>
-          <h3>5 · Offer pool <span style={sm}>(hold → book; the double-booking guard is server-side)</span></h3>
-          <ul style={{ listStyle: "none", padding: 0 }}>
-            {slots.map((s) => (
-              <li key={s.slot_id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 0" }}>
-                <span style={{ minWidth: 190 }}>{fmtFull(s.start_ts)}</span>
-                <span style={{ ...chip, background: s.status === "booked" ? "#dfd" : s.status === "held" ? "#ffe8bf" : "#eef" }}>
-                  {s.status}
-                </span>
-                {s.status === "available" && (
-                  <button style={btnSm} onClick={() => hold(s.slot_id)} disabled={busy}>Hold</button>
-                )}
-                {s.status === "held" && holds[s.slot_id] && (
-                  <button style={btnSm} onClick={() => bookIt(s.slot_id)} disabled={busy}>Book</button>
-                )}
-              </li>
-            ))}
-          </ul>
-          <p style={sm}>Candidate used for this manual test: id {firstCandidateId ?? "—"}</p>
-        </section>
-      )}
-
-      {tpl && (
-        <section style={{ ...box, borderColor: tpl.approved ? "#3a3" : "#e5a300" }}>
-          <h3>6 · Outreach &amp; Approval Gate 2 <span style={sm}>— approve the message + pool once, then send</span></h3>
-          <Field label="Subject">
-            <input style={inp} value={tpl.subject} disabled={tpl.approved}
-              onChange={(e) => setTpl({ ...tpl, subject: e.target.value })} />
-          </Field>
-          <label style={{ display: "flex", flexDirection: "column", fontSize: 13, gap: 4, marginTop: 8 }}>
-            Body <span style={sm}>placeholders: {"{name} {interviewer} {job} {duration} {slots}"}</span>
-            <textarea rows={9} value={tpl.body} disabled={tpl.approved}
-              onChange={(e) => setTpl({ ...tpl, body: e.target.value })}
-              style={{ padding: 8, fontFamily: "inherit" }} />
-          </label>
-          <button style={btnGhost} onClick={doPreview} disabled={busy}>Preview candidate email</button>
-          {preview && (
-            <div style={{ border: "1px solid #ccd", borderRadius: 8, padding: 12, marginTop: 10, background: "#fafbff" }}>
-              <p style={sm}>Preview — as <strong>{preview.to}</strong> would receive it:</p>
-              <p style={{ margin: "4px 0", fontWeight: 600 }}>{preview.subject}</p>
-              <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit", margin: 0 }}>{preview.body}</pre>
+            <div style={{ flex: 1, minHeight: 0 }}>
+              {tab === "chat"
+                ? <JobChat key={activeId} jobId={activeId} seedTurns={seeds.current[activeId]} onBoardChanged={boardChanged} />
+                : <Board key={`${activeId}-${bump}`} jobId={activeId} onAct={() => setTab("chat")} />}
             </div>
-          )}
-          {!tpl.approved ? (
-            <button style={btn} onClick={approve} disabled={busy}>Approve outreach (Gate 2)</button>
-          ) : !sent ? (
-            <>
-              <p style={{ color: "#3a3" }}>✓ Approved. Ready to send real emails via the connected mailbox.</p>
-              <button style={btn} onClick={doSend} disabled={busy}>Send outreach emails</button>
-            </>
-          ) : (
-            <div>
-              <p style={{ color: "#3a3" }}>✓ Sent {sent.sent} email(s). Candidates moved to "slots offered".</p>
-              <ul style={sm as React.CSSProperties}>
-                {sent.candidates.map((c) => (
-                  <li key={c.candidate_id}>{c.email} — thread {c.thread_id.slice(0, 10)}… · offered {c.offered} slots</li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </section>
-      )}
-
-      {sent && (
-        <section style={box}>
-          <h3>7 · Candidate reply <span style={sm}>(read the reply, parse it, propose or escalate)</span></h3>
-          <p style={sm}>Reads the latest reply for candidate id {activeCand ?? firstCandidateId ?? "—"} and runs one LLM parse.</p>
-          <button style={btn} onClick={doParseReply} disabled={busy}>Read &amp; parse reply</button>
-
-          {replyParse && replyParse.status === "no_reply" && (
-            <p style={sm}>{replyParse.message}</p>
-          )}
-
-          {replyParse && replyParse.reply_body && (
-            <div style={{ marginTop: 12 }}>
-              <p style={sm}>Reply from {replyParse.reply_from}:</p>
-              <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit", background: "#f6f6f6", padding: 10, borderRadius: 6, margin: "4px 0" }}>{replyParse.reply_body}</pre>
-              <p style={sm}>
-                Confidence <strong>{(replyParse.confidence ?? 0).toFixed(2)}</strong>
-                {" · "}availability answer: {String(replyParse.is_availability_answer)}
-                {replyParse.note ? ` · ${replyParse.note}` : ""}
-              </p>
-
-              {replyParse.status === "confirm" ? (
-                <div style={{ border: "1px solid #3a3", borderRadius: 8, padding: 12, marginTop: 8, background: "#f3fff3" }}>
-                  {!booked ? (
-                    <>
-                      <p style={{ margin: "0 0 6px", fontWeight: 600 }}>Proposed slot — the human commits:</p>
-                      <label style={{ display: "block", fontSize: 14, marginBottom: 8 }}>
-                        Slot to book (Edit before confirming):{" "}
-                        <select value={chosenSlot ?? ""} style={inp}
-                          onChange={(e) => setChosenSlot(Number(e.target.value))}>
-                          {replyParse.proposed_slots?.map((s) => (
-                            <option key={s.slot_id} value={s.slot_id}>{fmtFull(s.start)} (slot {s.slot_id})</option>
-                          ))}
-                        </select>
-                      </label>
-                      <button style={btn} onClick={doConfirmBooking} disabled={busy || !chosenSlot}>
-                        Confirm &amp; book
-                      </button>
-                    </>
-                  ) : (
-                    <div>
-                      <p style={{ margin: 0, fontWeight: 600, color: "#2a7" }}>✓ Booked for {booked.when}</p>
-                      <p style={{ margin: "6px 0 0" }}>
-                        Meet: {booked.meet_link
-                          ? <a href={booked.meet_link} target="_blank" rel="noreferrer">{booked.meet_link}</a>
-                          : "(generating…)"}
-                      </p>
-                      {booked.event_link && <p style={{ margin: "4px 0 0" }}>
-                        <a href={booked.event_link} target="_blank" rel="noreferrer" style={sm as React.CSSProperties}>view calendar event</a></p>}
-                      <p style={sm}>{booked.mail_status === "sent" ? "Both confirmation emails sent; other holds released." : booked.mail_status}</p>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div style={{ border: "1px solid #e5a300", borderRadius: 8, padding: 12, marginTop: 8, background: "#fffaf0" }}>
-                  <p style={{ margin: 0 }}>⚠ Escalated to <strong>Needs attention</strong> — {replyParse.reason}. Recruiter handles manually.</p>
-                </div>
-              )}
-            </div>
-          )}
-        </section>
-      )}
-
-      {board && (
-        <section style={box}>
-          <h3>8 · Status board <span style={sm}>— every candidate, their state, per-candidate actions</span></h3>
-          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-            <button style={btnGhost} onClick={loadBoard} disabled={busy}>Refresh</button>
-            <button style={btn} onClick={doSweep} disabled={busy}>Run sweep now (expire holds + follow-ups)</button>
-          </div>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
-            <thead>
-              <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
-                <th style={th}>Candidate</th><th style={th}>State</th><th style={th}>Detail</th><th style={th}>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {board.candidates.map((c: BoardCandidate) => (
-                <tr key={c.candidate_id} style={{ borderBottom: "1px solid #f0f0f0",
-                  background: c.candidate_id === activeCand ? "#f4f8ff" : undefined }}>
-                  <td style={td}>{c.name ?? "(no name)"}<br /><span style={sm}>{c.email}</span></td>
-                  <td style={td}><span style={{ ...chip, background: stateColor(c.status) }}>{c.status_label}</span>
-                    {c.followup_sent && <div style={sm}>follow-up sent</div>}</td>
-                  <td style={td}>
-                    {c.booked_start
-                      ? <>Booked {fmtFull(c.booked_start, board.timezone)}{c.meet_link && <> · <a href={c.meet_link} target="_blank" rel="noreferrer">Meet</a></>}</>
-                      : c.status === "reply_received"
-                        ? <span style={{ color: "#b26b00", fontWeight: 600 }}>Candidate replied — review</span>
-                        : c.status === "needs_attention"
-                        ? <span style={{ color: "#a00" }}>handle manually</span>
-                        : <span style={sm}>—</span>}
-                  </td>
-                  <td style={td}>
-                    {(c.status === "slots_offered" || c.status === "followup_sent" || c.status === "reply_received") && (
-                      <button style={btnSm} onClick={() => boardParse(c.candidate_id)} disabled={busy}>Read reply</button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <p style={sm}>Reply parse for the chosen candidate shows in section 7 above.</p>
-        </section>
-      )}
-
-      {error && <pre style={{ color: "crimson", whiteSpace: "pre-wrap" }}>{error}</pre>}
-
-
-      {toast && <div style={toastStyle}>{toast}</div>}
-    </main>
+          </>
+        )}
+      </main>
+    </div>
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return <label style={{ display: "flex", flexDirection: "column", fontSize: 13, gap: 4 }}>
-    {label}{children}</label>;
-}
-function fmtFull(iso: string, tz?: string) {
-  return new Date(iso).toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", ...(tz ? { timeZone: tz, timeZoneName: "short" } : {}) });
+function TabBtn({ label, on, onClick }: { label: string; on: boolean; onClick: () => void }) {
+  return (
+    <button onClick={onClick} style={{
+      border: "none", background: "transparent", fontSize: 12.5, padding: "6px 10px",
+      borderRadius: cvar("radius"), color: on ? cvar("ink") : cvar("ink-subtle"),
+      fontWeight: on ? 600 : 500, boxShadow: on ? `inset 0 0 0 1px ${cvar("hairline-2")}` : "none",
+    }}>{label}</button>
+  );
 }
 
-const box: React.CSSProperties = { border: "1px solid #ddd", borderRadius: 8, padding: 16, marginTop: 16 };
-const grid: React.CSSProperties = { display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 10 };
-const btn: React.CSSProperties = { padding: "9px 16px", fontSize: 14, cursor: "pointer", marginTop: 10 };
-const btnSm: React.CSSProperties = { padding: "4px 10px", fontSize: 13, cursor: "pointer" };
-const btnGhost: React.CSSProperties = { ...btn, background: "#f3f3f3" };
-const inp: React.CSSProperties = { padding: 6, fontSize: 14 };
-const chip: React.CSSProperties = { padding: "5px 9px", background: "#eef", borderRadius: 6, fontSize: 13 };
-const sm: React.CSSProperties = { fontSize: 12, color: "#666" };
-const th: React.CSSProperties = { padding: "6px 8px", fontSize: 12, color: "#666", fontWeight: 600 };
-const td: React.CSSProperties = { padding: "8px 8px", verticalAlign: "top" };
-function stateColor(status: string): string {
-  return status === "confirmed" ? "#dfd"
-    : status === "reply_received" ? "#ffd9a8"
-    : status === "needs_attention" ? "#ffe0e0"
-    : status === "followup_sent" ? "#fff0d6"
-    : status === "slots_offered" ? "#eef" : "#f0f0f0";
+function Empty({ connected }: { connected: boolean }) {
+  return (
+    <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+      <div style={{ maxWidth: 380, textAlign: "center" }}>
+        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>Scheduling agent</div>
+        <div style={{ fontSize: 13.5, color: cvar("ink-muted"), lineHeight: 1.55 }}>
+          {connected ? "Pick a job on the left, or start a new one with +." : "Connect Google from the sidebar, then start a job."}
+        </div>
+      </div>
+    </div>
+  );
 }
-const toastStyle: React.CSSProperties = {
-  position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)",
-  background: "#222", color: "#fff", padding: "10px 18px", borderRadius: 8, fontSize: 14,
-  boxShadow: "0 4px 14px rgba(0,0,0,.25)",
-};

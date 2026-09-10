@@ -50,6 +50,27 @@ async def create_job(body: CreateJob, db: AsyncSession = Depends(get_session)):
     return {"job_id": job_id, "session_id": session_id, "card": card, "status": "draft"}
 
 
+# --- list all jobs (sidebar of job-chats) -------------------------------
+
+@router.get("")
+async def list_jobs(db: AsyncSession = Depends(get_session)):
+    """All jobs with per-state candidate counts, newest first — powers the
+    job-chat sidebar."""
+    rows = (
+        await db.execute(
+            text(
+                "SELECT j.id, j.title, j.status, j.timezone, j.created_at, "
+                "count(c.id) AS candidates, "
+                "count(c.id) FILTER (WHERE c.status = 'confirmed') AS confirmed, "
+                "count(c.id) FILTER (WHERE c.status = 'reply_received') AS to_review, "
+                "count(c.id) FILTER (WHERE c.status = 'needs_attention') AS needs_attention "
+                "FROM job j "
+                "LEFT JOIN candidate c ON c.job_id = j.id "
+                "GROUP BY j.id ORDER BY j.created_at DESC"))
+    ).mappings().all()
+    return [dict(r) for r in rows]
+
+
 # --- edit the parameter card (recruiter tweaks before confirming) --------
 
 class UpdateCard(BaseModel):

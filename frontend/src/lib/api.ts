@@ -142,3 +142,18 @@ export const getBoard = (jobId: number) =>
 export const runSweep = (jobId: number) =>
   fetch(`${BASE}/jobs/${jobId}/sweep`, { method: "POST" })
     .then(j<{ holds_expired: number; followups_sent: number }>);
+// --- Dashboard additions: list jobs (sidebar), reload one job, Case-2 re-offer ---
+export type JobSummary = {
+  id: number; title: string; status: string; timezone: string;
+  created_at: string; candidates: number; confirmed: number;
+  to_review: number; needs_attention: number;
+};
+export const listJobs = () => fetch(`${BASE}/jobs`).then(j<JobSummary[]>);
+
+export type JobDetail = { id: number; title: string; timezone: string; params: Card; status: string; candidates?: unknown };
+export const getJob = (jobId: number) => fetch(`${BASE}/jobs/${jobId}`).then(j<JobDetail>);
+
+export type ReofferResult = { status: string; candidate_id: number;
+  target_time: string; slots_offered: number; slots: { start: string; end: string }[] };
+export const reoffer = (jobId: number, candidateId: number) =>
+  fetch(`${BASE}/jobs/${jobId}/reoffer/${candidateId}`, { method: "POST" }).then(j<ReofferResult>);

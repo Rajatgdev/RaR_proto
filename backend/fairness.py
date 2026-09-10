@@ -62,3 +62,22 @@ def fairness_subset(slots: list[dict], *, cap: int = MAX_OFFERS) -> list[dict]:
 
     chosen.sort(key=lambda s: s["start"])
     return chosen
+
+def slots_near_target(slots: list[dict], target_iso: str, *, cap: int = MAX_OFFERS) -> list[dict]:
+    """Pick up to `cap` eligible slots nearest a target instant (Case-2 re-offer).
+
+    `slots` are already-eligible {start,end} from compute_slots, so each already
+    respects the card's work-hours/duration/buffer rules; we only rank by
+    closeness to the candidate's requested time. Pure, deterministic."""
+    from datetime import datetime
+    target = datetime.fromisoformat(target_iso)
+    if target.tzinfo is not None:
+        target = target.replace(tzinfo=None)
+
+    def distance(s: dict):
+        st = datetime.fromisoformat(s["start"])
+        if st.tzinfo is not None:
+            st = st.replace(tzinfo=None)
+        return (abs((st - target).total_seconds()), s["start"])
+
+    return sorted(slots, key=distance)[:cap]

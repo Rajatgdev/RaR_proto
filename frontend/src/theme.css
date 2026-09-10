@@ -1,0 +1,56 @@
+/* Direction B — warm sage. Calm, low-density, hairline. Tokens only; components
+   read these vars via inline styles (no Tailwind in this project). */
+   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+   :root {
+     /* warm-neutral paper palette (deliberately NOT cream+terracotta) */
+     --paper:        #f4f3f0;
+     --surface:      #fbfaf8;
+     --surface-2:    #edeae4;
+     --ink:          #2b2a27;
+     --ink-muted:    #6b665d;
+     --ink-subtle:   #98938a;
+     --hairline:     #e5e2db;
+     --hairline-2:   #ddd8cf;
+   
+     /* single sage accent */
+     --accent:       #4a6b57;
+     --accent-ink:   #3f5c4b;
+     --accent-soft:  #e6ede8;
+   
+     /* semantic candidate states — each ALWAYS paired with text + a glyph in UI */
+     --st-confirmed:   #2f6b4f;  --st-confirmed-bg:   #e6efe9;
+     --st-review:      #a9671a;  --st-review-bg:      #f7ecdb;   /* reply_received */
+     --st-attention:   #b23a30;  --st-attention-bg:   #f8e7e4;   /* needs_attention */
+     --st-active:      #40618c;  --st-active-bg:      #e8eef6;   /* slots_offered / followup_sent */
+     --st-idle:        #6b665d;  --st-idle-bg:        #edeae4;   /* not_contacted / done-quiet */
+   
+     --radius:   8px;
+     --radius-lg: 12px;
+     --hair: 1px solid var(--hairline);
+   }
+   
+   * { box-sizing: border-box; border-color: var(--hairline); }
+   html, body, #root { height: 100%; margin: 0; }
+   body {
+     background: var(--paper);
+     color: var(--ink);
+     font-family: Inter, system-ui, -apple-system, sans-serif;
+     font-feature-settings: "cv01","ss03";
+     -webkit-font-smoothing: antialiased;
+     letter-spacing: -0.011em;
+   }
+   .mono { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+   .tnum { font-variant-numeric: tabular-nums; }
+   
+   ::-webkit-scrollbar { width: 9px; height: 9px; }
+   ::-webkit-scrollbar-thumb { background: var(--hairline-2); border-radius: 9px; }
+   ::-webkit-scrollbar-track { background: transparent; }
+   
+   @keyframes pulse-soft { 0%,100%{opacity:.45} 50%{opacity:.9} }
+   .thinking { animation: pulse-soft 1.4s ease-in-out infinite; }
+   @media (prefers-reduced-motion: reduce) { .thinking { animation: none; } }
+   
+   textarea, input, button { font-family: inherit; }
+   button { cursor: pointer; }
+   button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
