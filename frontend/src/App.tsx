@@ -194,7 +194,7 @@ export default function App() {
 
   return (
     <main style={{ fontFamily: "system-ui", maxWidth: 760, margin: "3rem auto", padding: "0 1rem" }}>
-      <h1>Scheduling Agent — Phase 2</h1>
+      <h1>Scheduling Agent — Phase 5</h1>
 
       {!status?.connected ? (
         <a href={loginUrl()}><button style={btn}>Connect Google Calendar</button></a>
