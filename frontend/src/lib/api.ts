@@ -160,3 +160,37 @@ export const reoffer = (jobId: number, candidateId: number) =>
 
 export type JobEvent = { ts: string; actor: string; action: string; detail: Record<string, unknown> | null };
 export const listEvents = (jobId: number) => fetch(`${BASE}/jobs/${jobId}/events`).then(j<JobEvent[]>);
+
+// --- Conversational agent (chat) ---
+export type ChatCard = {
+  kind: string; action: string; title: string; effect: string;
+  no_action_taken: boolean; endpoint: string; method: string;
+  payload: Record<string, unknown>; preview: Record<string, unknown>;
+};
+export type ChatReply = {
+  reply: string; card: ChatCard | null; job_id: number | null;
+  session_key: string; created_job: boolean;
+};
+export type ChatTurn = { role: "user" | "agent"; content: string; card: ChatCard | null; at: string };
+
+export const chat = (message: string, jobId: number | null, sessionKey: string | null) =>
+  fetch(`${BASE}/chat`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, job_id: jobId, session_key: sessionKey }),
+  }).then(j<ChatReply>);
+
+export const getChatHistory = (jobId: number | null, sessionKey: string | null) => {
+  const q = jobId != null ? `job_id=${jobId}` : `session_key=${encodeURIComponent(sessionKey ?? "")}`;
+  return fetch(`${BASE}/chat/history?${q}`).then(j<{ turns: ChatTurn[] }>);
+};
+
+// Fire the exact endpoint an approval card names (the button-click gate).
+export const runCardAction = (card: ChatCard) =>
+  fetch(`${BASE}${card.endpoint}`, {
+    method: card.method || "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(card.payload || {}),
+  }).then(async (r) => {
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail ?? `${r.status}`);
+    return r.json();
+  });

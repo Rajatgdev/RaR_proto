@@ -1,27 +1,29 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import * as api from "./lib/api";
-import { Sidebar, NewJob } from "./components/Sidebar";
+import { Sidebar } from "./components/Sidebar";
 import { JobChat } from "./components/JobChat";
 import { Board } from "./components/Board";
 import { Dashboard } from "./components/Dashboard";
 
 const cvar = (v: string) => `var(--${v})`;
 
-/* Shell: sidebar of job-chats → active job with Chat | Board tabs. "New" opens
-   the NewJob composer; on create, we open the job's chat seeded with its Gate-1
-   parameter card. A board-changed bump lets the Board reload after chat actions. */
+/* Shell: sidebar of job-chats -> active job with Chat | Board tabs. "New" opens
+   a fresh conversational chat (greeting screen, no form). The agent creates the
+   job itself from the conversation; we adopt the returned job_id. Chat is fully
+   persisted server-side, so switching away and back restores the transcript. */
 
 type Tab = "chat" | "board";
+type View =
+  | { mode: "dashboard" }
+  | { mode: "newchat"; sessionKey: string }   // brand-new conversation, no job yet
+  | { mode: "job"; id: number };
 
 export default function App() {
   const [jobs, setJobs] = useState<api.JobSummary[]>([]);
-  const [activeId, setActiveId] = useState<number | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [view, setView] = useState<View>({ mode: "dashboard" });
   const [tab, setTab] = useState<Tab>("chat");
   const [status, setStatus] = useState<api.Status>({ connected: false, email: null });
   const [bump, setBump] = useState(0);
-  // seed turns per newly created job so its chat opens on the Gate-1 card
-  const newJobReq = useRef<Record<number, string>>({});
 
   const refreshJobs = useCallback(async () => {
     try { setJobs(await api.listJobs()); } catch { /* ignore */ }
@@ -29,47 +31,83 @@ export default function App() {
 
   useEffect(() => { api.getStatus().then(setStatus).catch(() => {}); refreshJobs(); }, [refreshJobs]);
 
-  function openJob(id: number) { setActiveId(id); setCreating(false); setTab("chat"); }
-
-  function onCreated(id: number, request: string) {
-    newJobReq.current[id] = request;
-    refreshJobs();
-    openJob(id);
+  function openJob(id: number) { setView({ mode: "job", id }); setTab("chat"); }
+  function newChat() {
+    setView({ mode: "newchat", sessionKey: `s_${Math.random().toString(36).slice(2, 14)}` });
+    setTab("chat");
   }
+  function onJobCreated(id: number) { refreshJobs(); setView({ mode: "job", id }); }
+  const changed = useCallback(() => { setBump((b) => b + 1); refreshJobs(); }, [refreshJobs]);
 
-  const boardChanged = useCallback(() => { setBump((b) => b + 1); refreshJobs(); }, [refreshJobs]);
-
+  const activeId = view.mode === "job" ? view.id : null;
   const active = jobs.find((j) => j.id === activeId) ?? null;
+  const greeting = greetingLine();
 
   return (
     <div style={{ height: "100%", display: "grid", gridTemplateColumns: "210px 1fr" }}>
-      <Sidebar jobs={jobs} activeId={creating ? null : activeId}
-        onSelect={openJob} onNew={() => { setCreating(true); setActiveId(null); }}
+      <Sidebar jobs={jobs} activeId={activeId}
+        onSelect={openJob} onNew={newChat}
         connected={status.connected} email={status.email} />
 
       <main style={{ display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, background: cvar("paper") }}>
-        {creating ? (
-          <NewJob onCreated={onCreated} />
-        ) : activeId == null ? (
-          <Dashboard jobs={jobs} onOpen={openJob} onNew={() => { setCreating(true); setActiveId(null); }} />
+        {view.mode === "dashboard" ? (
+          <Dashboard jobs={jobs} onOpen={openJob} onNew={newChat} />
+        ) : view.mode === "newchat" ? (
+          <>
+            <div style={header}>
+              <div style={{ fontSize: 14, fontWeight: 600 }}>New interview</div>
+            </div>
+            <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+              <Greeting text={greeting} />
+              <JobChat key={view.sessionKey} jobId={null} sessionKey={view.sessionKey}
+                onJobCreated={onJobCreated} onChanged={changed} />
+            </div>
+          </>
         ) : (
           <>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, borderBottom: cvar("hair"),
-              padding: "0 18px", height: 46, background: cvar("surface") }}>
+            <div style={header}>
               <div style={{ fontSize: 14, fontWeight: 600, marginRight: 6 }}>{active?.title ?? "Job"}</div>
               <TabBtn label="Chat" on={tab === "chat"} onClick={() => setTab("chat")} />
-              <TabBtn label="Board" on={tab === "board"} onClick={() => { setTab("board"); }} />
+              <TabBtn label="Board" on={tab === "board"} onClick={() => setTab("board")} />
             </div>
             <div style={{ flex: 1, minHeight: 0 }}>
               {tab === "chat"
-                ? <JobChat key={activeId} jobId={activeId} newRequest={newJobReq.current[activeId]} onBoardChanged={boardChanged} />
-                : <Board key={`${activeId}-${bump}`} jobId={activeId} onAct={() => setTab("chat")} />}
+                ? <JobChat key={view.id} jobId={view.id} sessionKey={null}
+                    onJobCreated={onJobCreated} onChanged={changed} />
+                : <Board key={`${view.id}-${bump}`} jobId={view.id} onAct={() => setTab("chat")} />}
             </div>
           </>
         )}
       </main>
     </div>
   );
+}
+
+const header: React.CSSProperties = {
+  display: "flex", alignItems: "center", gap: 12, borderBottom: "1px solid var(--hairline)",
+  padding: "0 18px", height: 46, background: "var(--surface)",
+};
+
+/* A calm, time-aware greeting shown faintly above an empty new chat. It fades
+   out of the way once the conversation has content (JobChat renders over it). */
+function Greeting({ text }: { text: string }) {
+  return (
+    <div style={{
+      position: "absolute", top: "28%", left: 0, right: 0, textAlign: "center",
+      pointerEvents: "none", zIndex: 0,
+    }}>
+      <div style={{ fontSize: 24, fontWeight: 600, color: cvar("ink") }}>{text}</div>
+      <div style={{ fontSize: 14, color: cvar("ink-muted"), marginTop: 8 }}>
+        Tell me about the role, or ask me anything.
+      </div>
+    </div>
+  );
+}
+
+function greetingLine() {
+  const h = new Date().getHours();
+  const part = h < 12 ? "morning" : h < 18 ? "afternoon" : "evening";
+  return `Good ${part}.`;
 }
 
 function TabBtn({ label, on, onClick }: { label: string; on: boolean; onClick: () => void }) {
