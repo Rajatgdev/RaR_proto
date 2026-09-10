@@ -8,7 +8,8 @@ class Settings(BaseSettings):
 
     # LLM: only used to parse the recruiter's plain-English into a parameter card.
     OPENAI_API_KEY: str = ""
-    LLM_MODEL: str = "gpt-4o-mini"
+    LLM_MODEL: str = "gpt-4o-mini"        # tool-calling / structured extraction
+    LLM_CHAT_MODEL: str = "gpt-4.1-mini"  # conversational prose replies
 
     # Google OAuth (Testing mode). Secrets live in Railway, never the frontend.
     GOOGLE_CLIENT_ID: str = ""
