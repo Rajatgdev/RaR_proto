@@ -21,7 +21,7 @@ export default function App() {
   const [status, setStatus] = useState<api.Status>({ connected: false, email: null });
   const [bump, setBump] = useState(0);
   // seed turns per newly created job so its chat opens on the Gate-1 card
-  const newJobIds = useRef<Set<number>>(new Set());
+  const newJobReq = useRef<Record<number, string>>({});
 
   const refreshJobs = useCallback(async () => {
     try { setJobs(await api.listJobs()); } catch { /* ignore */ }
@@ -31,8 +31,8 @@ export default function App() {
 
   function openJob(id: number) { setActiveId(id); setCreating(false); setTab("chat"); }
 
-  function onCreated(id: number) {
-    newJobIds.current.add(id);
+  function onCreated(id: number, request: string) {
+    newJobReq.current[id] = request;
     refreshJobs();
     openJob(id);
   }
@@ -62,7 +62,7 @@ export default function App() {
             </div>
             <div style={{ flex: 1, minHeight: 0 }}>
               {tab === "chat"
-                ? <JobChat key={activeId} jobId={activeId} isNew={newJobIds.current.has(activeId)} onBoardChanged={boardChanged} />
+                ? <JobChat key={activeId} jobId={activeId} newRequest={newJobReq.current[activeId]} onBoardChanged={boardChanged} />
                 : <Board key={`${activeId}-${bump}`} jobId={activeId} onAct={() => setTab("chat")} />}
             </div>
           </>

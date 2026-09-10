@@ -126,7 +126,7 @@ async def reoffer(job_id: int, candidate_id: int, db: AsyncSession = Depends(get
     if iv is None:
         raise HTTPException(422, "no interviewer on this job; generate slots first")
 
-    zone = ZoneInfo(job["timezone"])
+    zone = ZoneInfo(job["timezone"] or "Europe/London")
     start_day = date.today()
     days = card["window_days"]
     time_min = datetime.combine(start_day, time(0, 0), zone).astimezone(UTC).isoformat()

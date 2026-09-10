@@ -80,7 +80,7 @@ async def generate(job_id: int, db: AsyncSession = Depends(get_session)):
             {"c": creds.to_json(), "id": account["id"]})
         await db.commit()
 
-    zone = ZoneInfo(tz)
+    zone = ZoneInfo(tz or "Europe/London")
     start_day = date.today()
     days = card["window_days"]
     time_min = datetime.combine(start_day, time(0, 0), zone).astimezone(UTC).isoformat()

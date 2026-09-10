@@ -62,7 +62,7 @@ export function Sidebar({
 }
 
 /* New-job composer: agent lists what it needs, recruiter provides the plain-English request. */
-export function NewJob({ onCreated }: { onCreated: (jobId: number) => void }) {
+export function NewJob({ onCreated }: { onCreated: (jobId: number, request: string) => void }) {
   const [req, setReq] = React.useState("");
   const [tz, setTz] = React.useState("Asia/Kolkata");
   const [busy, setBusy] = React.useState(false);
@@ -73,7 +73,7 @@ export function NewJob({ onCreated }: { onCreated: (jobId: number) => void }) {
     setBusy(true); setErr(null);
     try {
       const j = await api.createJob(req, tz);
-      onCreated(j.job_id);
+      onCreated(j.job_id, req);
     } catch (e) { setErr((e as Error).message); }
     finally { setBusy(false); }
   }
