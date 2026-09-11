@@ -57,9 +57,9 @@ export default function App() {
             <div style={header}>
               <div style={{ fontSize: 14, fontWeight: 600 }}>New interview</div>
             </div>
-            <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-              <Greeting text={greeting} />
+            <div style={{ flex: 1, minHeight: 0 }}>
               <JobChat key={view.sessionKey} jobId={null} sessionKey={view.sessionKey}
+                greeting={greeting}
                 onJobCreated={onJobCreated} onChanged={changed} />
             </div>
           </>
@@ -87,22 +87,6 @@ const header: React.CSSProperties = {
   display: "flex", alignItems: "center", gap: 12, borderBottom: "1px solid var(--hairline)",
   padding: "0 18px", height: 46, background: "var(--surface)",
 };
-
-/* A calm, time-aware greeting shown faintly above an empty new chat. It fades
-   out of the way once the conversation has content (JobChat renders over it). */
-function Greeting({ text }: { text: string }) {
-  return (
-    <div style={{
-      position: "absolute", top: "28%", left: 0, right: 0, textAlign: "center",
-      pointerEvents: "none", zIndex: 0,
-    }}>
-      <div style={{ fontSize: 24, fontWeight: 600, color: cvar("ink") }}>{text}</div>
-      <div style={{ fontSize: 14, color: cvar("ink-muted"), marginTop: 8 }}>
-        Tell me about the role, or ask me anything.
-      </div>
-    </div>
-  );
-}
 
 function greetingLine() {
   const h = new Date().getHours();

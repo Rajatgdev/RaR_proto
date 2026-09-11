@@ -13,11 +13,12 @@ const c = (v: string) => `var(--${v})`;
 type Turn = { role: "user" | "agent"; content: string; card: api.ChatCard | null; pending?: boolean };
 
 export function JobChat({
-  jobId, sessionKey, seedMessage, onJobCreated, onChanged,
+  jobId, sessionKey, seedMessage, greeting, onJobCreated, onChanged,
 }: {
   jobId: number | null;
   sessionKey: string | null;
   seedMessage?: string;
+  greeting?: string;
   onJobCreated: (id: number) => void;
   onChanged: () => void;
 }) {
@@ -100,6 +101,14 @@ export function JobChat({
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <div style={{ flex: 1, overflowY: "auto", padding: "24px 0" }}>
         <div style={{ maxWidth: 720, margin: "0 auto", padding: "0 20px", display: "flex", flexDirection: "column", gap: 18 }}>
+          {turns.length === 0 && greeting && (
+            <div style={{ textAlign: "center", marginTop: "22vh", pointerEvents: "none" }}>
+              <div style={{ fontSize: 26, fontWeight: 600, color: c("ink") }}>{greeting}</div>
+              <div style={{ fontSize: 14, color: c("ink-muted"), marginTop: 8 }}>
+                Tell me about the role, or ask me anything.
+              </div>
+            </div>
+          )}
           {turns.map((t, i) => (
             <TurnView key={i} turn={t} onApprove={(card) => approveCard(i, card)} />
           ))}
@@ -115,7 +124,7 @@ export function JobChat({
             placeholder="Message the agent…"
             style={{
               flex: 1, padding: "11px 14px", fontSize: 14, borderRadius: c("radius"),
-              border: `1px solid ${c("hairline")}`, background: c("surface"), color: c("ink"),
+              border: `1px solid ${c("hairline")}`, outline: "none", background: c("surface"), color: c("ink"),
             }} />
           <Btn onClick={() => void send(input)} disabled={busy || !input.trim()}>Send</Btn>
         </div>
@@ -136,15 +145,33 @@ function TurnView({ turn, onApprove }: { turn: Turn; onApprove: (card: api.ChatC
     );
   }
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      {turn.pending ? (
-        <div style={{ color: c("ink-muted"), fontSize: 14 }}>…</div>
-      ) : (
-        turn.content && (
-          <div style={{ fontSize: 14, lineHeight: 1.6, color: c("ink"), whiteSpace: "pre-wrap" }}>{turn.content}</div>
-        )
-      )}
-      {turn.card && <ApprovalCard card={turn.card} pending={turn.pending} onApprove={onApprove} />}
+    <div style={{ display: "flex", gap: 10 }}>
+      <div aria-hidden style={{
+        width: 26, height: 26, borderRadius: 7, flexShrink: 0, marginTop: 2,
+        background: c("accent-soft"), color: c("accent-ink"),
+        display: "grid", placeItems: "center", fontSize: 13, fontWeight: 700,
+      }}>◆</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0, flex: 1 }}>
+        {turn.pending ? <TypingDots /> : (
+          turn.content && (
+            <div style={{ fontSize: 14, lineHeight: 1.6, color: c("ink"), whiteSpace: "pre-wrap" }}>{turn.content}</div>
+          )
+        )}
+        {turn.card && <ApprovalCard card={turn.card} pending={turn.pending} onApprove={onApprove} />}
+      </div>
+    </div>
+  );
+}
+
+function TypingDots() {
+  return (
+    <div style={{ display: "flex", gap: 4, padding: "6px 0" }}>
+      {[0, 1, 2].map((i) => (
+        <span key={i} style={{
+          width: 6, height: 6, borderRadius: "50%", background: "var(--ink-muted)",
+          animation: "blink 1.2s infinite", animationDelay: `${i * 0.2}s`,
+        }} />
+      ))}
     </div>
   );
 }
