@@ -18,30 +18,44 @@ from tzutil import safe_zone
 # Tunable during testing (build-plan says make it a config value).
 CONFIDENCE_THRESHOLD = 0.75
 
-_SYSTEM = """You read a candidate's email reply and decide which of the OFFERED
-interview slots they chose (or whether they proposed a genuinely different time).
-
-You are given a numbered list of offered slots, each labelled with its weekday
-AND date (e.g. "Monday 14 September"). That list is the SOURCE OF TRUTH for which
-weekday maps to which date. Return ONLY JSON in exactly this shape:
+_SYSTEM = """You read a candidate's email reply about an interview and decide what
+they want. Return ONLY JSON in exactly this shape:
 {
+  "intent": "pick_slot | cancel | reschedule | other",
   "windows": [{"start": "YYYY-MM-DDTHH:MM:SS", "end": "YYYY-MM-DDTHH:MM:SS"}],
+  "requested_date": "YYYY-MM-DD | null",
   "confidence": 0.0,
   "is_availability_answer": true,
   "note": "one short line on what you understood"
 }
+
+INTENT — classify the reply first:
+- "pick_slot": they are choosing one of the offered times (or proposing a time),
+  and there is NO existing confirmed interview they're trying to change.
+- "cancel": they want to cancel / can no longer attend / are withdrawing from an
+  interview that was already booked. (e.g. "I need to cancel", "can't make it any
+  more", "please cancel my interview").
+- "reschedule": they want to MOVE an already-booked interview to a different time,
+  OR (before booking) none of the offered times work and they name a new date
+  they're free from. (e.g. "can we move it to the 16th?", "none of these work,
+  I'm free from the 20th").
+- "other": a question, small talk, or anything not about scheduling.
+
+You are given a numbered list of OFFERED slots (weekday + date) — the SOURCE OF
+TRUTH for which weekday maps to which date. Also given: whether the candidate
+already has a CONFIRMED booking.
+
 Rules:
-- The candidate is replying to an email that offered exactly those slots. If they
-  name a weekday, a date, or a time that appears in the offered list — even bare
-  ("Monday works", "Wednesday is good", "the 1:30 one") — treat it as choosing
-  THAT offered slot. Return a window spanning exactly that slot's start–end, set
-  is_availability_answer=true, confidence high (>=0.8).
-- A bare weekday that matches a weekday in the offered list is a MATCH. Do NOT
-  assume the candidate means a different week — the offered list defines the dates.
-- Only if they name a day/time that is NOT anywhere in the offered list, return
-  that window with lower confidence, is_availability_answer=true.
-- Set is_availability_answer=false ONLY for a question, a decline, or a message
-  that is not about picking a time at all.
+- pick_slot: if they name a weekday, date, or time in the offered list — even bare
+  ("Monday works", "the 1:30 one") — return a window spanning exactly that slot's
+  start–end, is_availability_answer=true, confidence >=0.8. A bare weekday that
+  matches the offered list IS a match; do not assume a different week.
+- reschedule / "none of these work": set intent="reschedule". If they state a
+  specific date they're free from, put it in requested_date (YYYY-MM-DD, resolved
+  against the offered list's dates). windows may be empty. is_availability_answer
+  can be false (we're not picking an offered slot).
+- cancel: intent="cancel", windows empty, is_availability_answer=false.
+- other: intent="other", windows empty, is_availability_answer=false, low confidence.
 - Times are local to the job timezone; output naive ISO (no offset).
 Output JSON only."""
 
@@ -77,16 +91,22 @@ def _slot_lines(slots: list[dict], tz: str) -> str:
                      f"end {en.strftime('%Y-%m-%dT%H:%M:%S')})")
     return "\n".join(lines)
 
-
-def parse_reply(reply_text: str, *, tz: str, offered_slots: list[dict]) -> dict:
+def parse_reply(reply_text: str, *, tz: str, offered_slots: list[dict],
+                already_booked: bool = False) -> dict:
     """LLM parse against the concrete offered slots. Strips quoted history first.
-    Returns the validated structured dict (defaults on failure)."""
+    Returns the validated structured dict (defaults on failure). already_booked
+    tells the model whether a confirmed interview exists (so cancel/reschedule of
+    an existing booking is distinguishable from a first-time pick)."""
     clean = strip_quoted(reply_text) or reply_text
     try:
         from openai import OpenAI
 
         client = OpenAI(api_key=settings.OPENAI_API_KEY)
-        user = (f"Job timezone: {tz}\n\nOffered slots:\n{_slot_lines(offered_slots, tz)}\n\n"
+        booked_line = ("This candidate ALREADY HAS a confirmed interview booked."
+                       if already_booked else
+                       "This candidate does NOT yet have a confirmed interview.")
+        user = (f"Job timezone: {tz}\n{booked_line}\n\n"
+                f"Offered slots:\n{_slot_lines(offered_slots, tz)}\n\n"
                 f"Candidate reply (quoted history removed):\n{clean}")
         resp = client.chat.completions.create(
             model=settings.LLM_MODEL,
@@ -97,10 +117,10 @@ def parse_reply(reply_text: str, *, tz: str, offered_slots: list[dict]) -> dict:
         )
         raw = json.loads(resp.choices[0].message.content)
     except Exception as e:
-        return {"windows": [], "confidence": 0.0, "is_availability_answer": False,
+        return {"intent": "other", "requested_date": None, "windows": [],
+                "confidence": 0.0, "is_availability_answer": False,
                 "note": f"parse failed ({type(e).__name__})"}
     return _coerce(raw)
-
 
 def _coerce(raw: dict) -> dict:
     windows = []
@@ -111,7 +131,24 @@ def _coerce(raw: dict) -> dict:
         conf = float(raw.get("confidence", 0.0))
     except (TypeError, ValueError):
         conf = 0.0
+
+    intent = str(raw.get("intent", "pick_slot")).strip().lower()
+    if intent not in ("pick_slot", "cancel", "reschedule", "other"):
+        intent = "pick_slot"
+
+    req = raw.get("requested_date")
+    if isinstance(req, str) and req.strip():
+        try:
+            datetime.fromisoformat(req.strip())  # accepts YYYY-MM-DD
+            requested_date = req.strip()[:10]
+        except ValueError:
+            requested_date = None
+    else:
+        requested_date = None
+
     return {
+        "intent": intent,
+        "requested_date": requested_date,
         "windows": windows,
         "confidence": max(0.0, min(1.0, conf)),
         "is_availability_answer": bool(raw.get("is_availability_answer", False)),

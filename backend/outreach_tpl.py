@@ -11,11 +11,12 @@ DEFAULT_SUBJECT = "Interview scheduling — {job}"
 
 DEFAULT_BODY = """Hi {name},
 
-Thanks for your interest in the {job} role. I'd like to set up a {duration}-minute
-screen with {interviewer}. Here are some times that work — just reply with the one
-you'd like (or suggest another that suits you):
+Thanks for your interest in the {job} role. I'd like to set up a {duration}-minute screen with {interviewer}. Here are some times that work — just reply with the one
+you'd like:
 
 {slots}
+
+If none of these suit, reply with a specific date you're free from (for example "I'm free from the 16th") and I'll send a fresh set of times around then.
 
 Looking forward to hearing back.
 
