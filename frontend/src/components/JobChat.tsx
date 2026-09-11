@@ -84,16 +84,20 @@ export function JobChat({
         const pv = card.preview as { subject?: string; body?: string };
         await api.approveOutreach(jid, pv.subject ?? "", pv.body ?? "");
       }
-      await api.runCardAction(card);
+      const res = await api.runCardAction(card);
       setTurns((t) => t.map((x, i) =>
         i === idx ? { ...x, pending: false, card: { ...card, no_action_taken: false } } : x));
       onChanged();
-      await send(resultPrompt(card.action));
+      try { await send(resultPrompt(card.action)); } catch { /* narration only */ }
+      void res;
     } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
       setTurns((t) => t.map((x, i) =>
-        i === idx ? { ...x, pending: false, content: x.content + `\n(couldn't complete: ${e instanceof Error ? e.message : e})` } : x));
+        i === idx ? { ...x, pending: false,
+          content: (x.content ? x.content + "\n\n" : "") + `⚠ Couldn't complete: ${msg}` } : x));
     }
   }
+
 
   if (!loaded) return <div style={{ padding: 24, color: c("ink-muted") }}>Loading…</div>;
 
@@ -185,7 +189,7 @@ function ApprovalCard({ card, pending, onApprove }: {
     <GateCard
       gate={gateLabel(card.action)}
       title={card.title}
-      reassurance={resolved ? undefined : `${card.effect} No action taken yet.`}
+      reassurance={resolved ? undefined : `${card.effect ?? ""} No action taken yet.`.trim()}
       primaryLabel={primaryLabel(card)}
       onPrimary={() => onApprove(card)}
       pending={pending}
@@ -216,12 +220,17 @@ function resultPrompt(a: string) {
     : "Done \u2014 what's next?";
 }
 function previewRows(card: api.ChatCard): [string, React.ReactNode][] {
-  const p = card.preview as Record<string, any>;
-  const rows: [string, React.ReactNode][] = [];
-  if (card.action === "approve_and_send" && p?.subject) rows.push(["Subject", String(p.subject)]);
-  if (card.action === "book") {
-    if (p?.slot_id) rows.push(["Slot", `#${p.slot_id}`]);
-    if (p?.candidate_id) rows.push(["Candidate", `#${p.candidate_id}`]);
+    const p = card.preview as Record<string, any>;
+    const rows: [string, React.ReactNode][] = [];
+    if (!p) return rows;
+    if (card.action === "confirm_gate1") {
+      for (const [k, v] of Object.entries(p)) rows.push([k, String(v)]);
+      return rows;
+    }
+    if (card.action === "approve_and_send" && p.subject) rows.push(["Subject", String(p.subject)]);
+    if (card.action === "book") {
+      if (p.slot_id) rows.push(["Slot", `#${p.slot_id}`]);
+      if (p.candidate_id) rows.push(["Candidate", `#${p.candidate_id}`]);
+    }
+    return rows;
   }
-  return rows;
-}

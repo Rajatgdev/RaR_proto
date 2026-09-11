@@ -98,11 +98,24 @@ def _propose(action: str, title: str, effect: str, endpoint: str,
 
 
 async def _propose_confirm_gate1(db, job_id, args):
+    from sqlalchemy import text as _text
+    row = (await db.execute(
+        _text("SELECT params FROM job WHERE id = :j"), {"j": job_id})
+    ).scalar_one_or_none()
+    card = row or {}
+    ivs = card.get("interviewers") or []
+    preview = {
+        "Role": card.get("job_title", "—"),
+        "Duration": f"{card.get('duration_min', '—')} min",
+        "Hours": f"{card.get('work_start', '—')}–{card.get('work_end', '—')}",
+        "Window": f"{card.get('window_days', '—')} days",
+        "Buffer": f"{card.get('buffer_min', '—')} min",
+        "Interviewer": ", ".join(i.get("name", "") for i in ivs) or "—",
+    }
     return _propose(
         "confirm_gate1", "Confirm the interview parameters?",
         "Locks the parameter card and authorises calendar reads. Reversible via Edit.",
-        f"/jobs/{job_id}/confirm", "POST", {},
-        {"note": "Confirms Gate 1 for this job."})
+        f"/jobs/{job_id}/confirm", "POST", {}, preview)
 
 
 async def _propose_approve_and_send(db, job_id, args):
