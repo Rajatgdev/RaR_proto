@@ -115,7 +115,7 @@ def _summarize(name, result):
         return str(result)[:800]
     if "error" in result:
         return f"{name} error: {result['error']}"
-    if result.get("card"):
+    if isinstance(result.get("card"), dict) and result["card"].get("title"):
         return f"prepared approval card: {result['card'].get('title')}"
     slim = {k: v for k, v in result.items() if k not in ("credentials",)}
     s = json.dumps(slim, default=str)
@@ -175,8 +175,11 @@ async def chat(body: ChatIn, db: AsyncSession = Depends(get_session)):
                 job_id = created_job_id
                 schemas = tools.tool_schemas(include_pre_job=False)
 
-            # GATED tool -> a card; stop the loop, human must click
-            if isinstance(result, dict) and result.get("card"):
+            # GATED tool -> an APPROVAL card; stop the loop, human must click.
+            # Only gated tools produce approval cards. AUTO tools (e.g. create_job)
+            # may carry an unrelated "card" key (the parameter card) — never treat
+            # that as the approval card.
+            if tools.is_gated(name) and isinstance(result, dict) and result.get("card"):
                 card = result["card"]
                 stop = True
 
