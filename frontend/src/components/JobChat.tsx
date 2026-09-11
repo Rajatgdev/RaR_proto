@@ -185,6 +185,23 @@ function ApprovalCard({ card, pending, onApprove }: {
 }) {
   const resolved = card.no_action_taken === false;
   const rows = previewRows(card);
+  if ((card as any).kind === "param") {
+    return (
+      <div style={{ border: "1px solid var(--hairline-2)", borderRadius: 10, background: "var(--surface)", overflow: "hidden" }}>
+        <div style={{ padding: "8px 14px", background: "var(--paper)", borderBottom: "1px solid var(--hairline)",
+          fontSize: 11, fontWeight: 600, letterSpacing: ".04em", textTransform: "uppercase", color: "var(--ink-muted)" }}>
+          Parameter card
+        </div>
+        <div style={{ padding: 14 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>{card.title}</div>
+          {rows.length > 0 && <KV rows={rows} />}
+          <div style={{ fontSize: 12, color: "var(--ink-muted)", marginTop: 10 }}>
+            Tell me if you'd like to change anything, or add candidates to continue.
+          </div>
+        </div>
+      </div>
+    );
+  }
   return (
     <GateCard
       gate={gateLabel(card.action)}
@@ -223,10 +240,10 @@ function previewRows(card: api.ChatCard): [string, React.ReactNode][] {
     const p = card.preview as Record<string, any>;
     const rows: [string, React.ReactNode][] = [];
     if (!p) return rows;
-    if (card.action === "confirm_gate1") {
-      for (const [k, v] of Object.entries(p)) rows.push([k, String(v)]);
-      return rows;
-    }
+    if (card.action === "confirm_gate1" || (card as any).kind === "param") {
+        for (const [k, v] of Object.entries(p)) rows.push([k, String(v)]);
+        return rows;
+      }
     if (card.action === "approve_and_send" && p.subject) rows.push(["Subject", String(p.subject)]);
     if (card.action === "book") {
       if (p.slot_id) rows.push(["Slot", `#${p.slot_id}`]);

@@ -44,6 +44,11 @@ say you've prepared it and the recruiter can confirm on the card.
 Guidance:
 - To start a job you need at least the role, who's interviewing, and the duration.
   Once you have that, call create_job. If details are missing, ask for them.
+- When the recruiter states hours, buffer, window, or duration, PASS THEM in the
+  create_job request text so they're applied — do not default them and then ask.
+  E.g. "noon till 4pm, 15 min buffer" means work_start 12:00, work_end 16:00,
+  buffer 15. After creating, the parameter card is shown for review; if a value
+  looks wrong the recruiter can tell you to change it (call update_card).
 - THE PIPELINE ORDER (follow it): 1) create_job → show the parsed parameter card
   and let them edit; 2) add_candidates (ask them to paste a CSV or list — you
   CANNOT confirm Gate 1 with zero candidates); 3) ONLY THEN propose confirm_gate1;
@@ -137,6 +142,7 @@ async def chat(body: ChatIn, db: AsyncSession = Depends(get_session)):
     card = None
     outcome_notes = []
     created_job_id = None
+    param_card = None
     tool_audit = []
 
     # --- tool loop (blocking OpenAI calls run in threadpool) ---
@@ -169,11 +175,28 @@ async def chat(body: ChatIn, db: AsyncSession = Depends(get_session)):
 
             result = await tools.run_tool(name, db, job_id, args)
 
-            # AUTO create_job: adopt the new job_id + re-parent pre-job turns
+            # AUTO create_job: adopt the new job_id + re-parent pre-job turns,
+            # and surface the parsed parameters as an editable parameter card so
+            # the recruiter can review/edit them before Gate 1.
             if name == "create_job" and isinstance(result, dict) and result.get("job_id"):
                 created_job_id = result["job_id"]
                 job_id = created_job_id
                 schemas = tools.tool_schemas(include_pre_job=False)
+                pc = result.get("card") or {}
+                ivs = pc.get("interviewers") or []
+                param_card = {
+                    "kind": "param", "action": "param_card",
+                    "title": f"Parameter card · {pc.get('job_title', 'role')}",
+                    "job_id": created_job_id,
+                    "preview": {
+                        "Role": pc.get("job_title", "—"),
+                        "Duration": f"{pc.get('duration_min', '—')} min",
+                        "Hours": f"{pc.get('work_start', '—')}–{pc.get('work_end', '—')}",
+                        "Window": f"{pc.get('window_days', '—')} days",
+                        "Buffer": f"{pc.get('buffer_min', '—')} min",
+                        "Interviewer": ", ".join(i.get("name", "") for i in ivs) or "—",
+                    },
+                }
 
             # GATED tool -> an APPROVAL card; stop the loop, human must click.
             # Only gated tools produce approval cards. AUTO tools (e.g. create_job)
@@ -189,6 +212,11 @@ async def chat(body: ChatIn, db: AsyncSession = Depends(get_session)):
 
         if stop:
             break
+
+    # If no gated approval card was produced but a job was just created, show the
+    # editable parameter card so the recruiter can review it before Gate 1.
+    if card is None and param_card is not None:
+        card = param_card
 
     # --- prose reply ---
     try:
