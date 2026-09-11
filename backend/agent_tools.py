@@ -142,6 +142,14 @@ async def _propose_cancel(db, job_id, args):
         {"candidate_id": args["candidate_id"], "reason": args.get("reason")})
 
 
+async def _propose_rebook(db, job_id, args):
+    return _propose(
+        "rebook", "Move this interview to the new time?",
+        "Books the new slot first, then cancels the old event and frees the old slot. "
+        "The original is kept if the move fails. Irreversible once confirmed.",
+        f"/jobs/{job_id}/replies/{args['candidate_id']}/rebook", "POST",
+        {"slot_id": args["slot_id"]},
+        {"candidate_id": args["candidate_id"], "slot_id": args["slot_id"]})
 # --- the registry ---------------------------------------------------------
 
 class Tool:
@@ -229,6 +237,14 @@ TOOLS: dict[str, Tool] = {t.name: t for t in [
          _p({"candidate_id": {"type": "integer"}, "reason": {"type": "string"}},
             ["candidate_id"]),
          _propose_cancel),
+    Tool("reschedule_booking", GATED,
+         "Propose moving a candidate's confirmed interview to a NEW slot they picked "
+         "(books the new slot first, then cancels the old — original kept if the move "
+         "fails). Returns an approval card; does NOT execute. Use reoffer first to send "
+         "the candidate fresh times around their requested date.",
+         _p({"candidate_id": {"type": "integer"}, "slot_id": {"type": "integer"}},
+            ["candidate_id", "slot_id"]),
+         _propose_rebook),
 ]}
 
 

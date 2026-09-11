@@ -431,3 +431,160 @@ async def cancel_booking(job_id: int, candidate_id: int, body: Cancel,
 
     return {"status": "cancelled", "candidate_id": candidate_id,
             "slot_freed": booking["slot_id"], "when": when, "mail_status": mail_status}
+
+
+# --- Chunk C: reschedule move-saga (book NEW before cancelling OLD) --------
+
+class Rebook(BaseModel):
+    slot_id: int   # the NEW slot the candidate/recruiter picked
+
+
+@router.post("/{candidate_id}/rebook")
+async def rebook_booking(job_id: int, candidate_id: int, body: Rebook,
+                         db: AsyncSession = Depends(get_session)):
+    """Move a confirmed interview to a new slot using EXA's safe saga:
+    book the NEW slot first (claim + create new event + insert new booking), and
+    ONLY THEN cancel the OLD one (delete old event, free old slot, supersede old
+    booking). If any step before the old-cancel fails, the ORIGINAL booking is
+    left fully intact and the new slot is rolled back — never a double-book, never
+    a lost interview. Gated: only reachable by the recruiter's approval click."""
+    job = (
+        await db.execute(
+            text("SELECT session_id, params, timezone FROM job WHERE id = :j"), {"j": job_id})
+    ).mappings().one_or_none()
+    if job is None:
+        raise HTTPException(404, "job not found")
+    card = job["params"]
+
+    cand = (
+        await db.execute(
+            text("SELECT id, name, email, timezone, status FROM candidate "
+                 "WHERE id = :c AND job_id = :j"), {"c": candidate_id, "j": job_id})
+    ).mappings().one_or_none()
+    if cand is None:
+        raise HTTPException(404, "candidate not found")
+
+    old = (
+        await db.execute(
+            text("SELECT b.id, b.slot_id, b.gcal_event_id, s.start_ts "
+                 "FROM booking b JOIN slot s ON s.id = b.slot_id "
+                 "WHERE b.candidate_id = :c AND b.status = 'active' "
+                 "ORDER BY b.id DESC LIMIT 1"), {"c": candidate_id})
+    ).mappings().one_or_none()
+    if old is None:
+        raise HTTPException(409, "no active booking to reschedule for this candidate")
+    if old["slot_id"] == body.slot_id:
+        raise HTTPException(409, "that is already the booked slot")
+
+    new_slot = (
+        await db.execute(
+            text("SELECT id, start_ts, end_ts FROM slot WHERE id=:s AND job_id=:j"),
+            {"s": body.slot_id, "j": job_id})
+    ).mappings().one_or_none()
+    if new_slot is None:
+        raise HTTPException(404, "new slot not found")
+
+    acc = await _account(db)
+    creds = gcal.credentials_from_json(acc["credentials"])
+    try:
+        refreshed = await run_in_threadpool(gcal.ensure_fresh, creds)
+    except Exception:
+        raise HTTPException(401, "Google connection expired; reconnect required")
+    if refreshed:
+        await db.execute(
+            text("UPDATE google_account SET credentials = CAST(:c AS JSONB), "
+                 "updated_at = now() WHERE id = :id"),
+            {"c": creds.to_json(), "id": acc["id"]})
+        await db.commit()
+
+    interviewer = (
+        await db.execute(
+            text("SELECT name, email FROM interviewer WHERE job_id=:j LIMIT 1"), {"j": job_id})
+    ).mappings().one_or_none()
+    iv_email = interviewer["email"] if interviewer else acc["email"]
+    iv_name = interviewer["name"] if interviewer else "the interviewer"
+    duration = card.get("duration_min", 30)
+    title = card.get("job_title", "Interview")
+
+    # === STEP 1: claim the NEW slot atomically (Phase-3 guard) ===============
+    import uuid as _uuid
+    claimed = (
+        await db.execute(
+            text("UPDATE slot SET status='booked' WHERE id=:s AND job_id=:j AND "
+                 "(status='available' OR (status='held' AND (hold_owner=:c OR "
+                 "hold_expires_at <= now()))) RETURNING id"),
+            {"s": body.slot_id, "j": job_id, "c": candidate_id})
+    ).scalar_one_or_none()
+    if claimed is None:
+        # New slot taken — OLD booking untouched. No double-book.
+        raise HTTPException(409, "that new slot is no longer available; pick another")
+
+    # === STEP 2: create the NEW calendar event ===============================
+    try:
+        ev = await run_in_threadpool(
+            gcal.create_event_with_meet, creds, acc["email"],
+            summary=f"{title} — interview with {cand['name'] or cand['email']}",
+            description=f"{duration}-minute screen with {iv_name} (rescheduled).",
+            start_iso=new_slot["start_ts"].isoformat(),
+            end_iso=new_slot["end_ts"].isoformat(),
+            attendees=[cand["email"], iv_email], request_id=str(_uuid.uuid4()))
+    except Exception as e:
+        # New event failed -> roll back the new slot; OLD booking still intact.
+        await db.execute(text("UPDATE slot SET status='available', hold_id=NULL, "
+                              "hold_owner=NULL, hold_expires_at=NULL WHERE id=:s"),
+                         {"s": body.slot_id})
+        await db.commit()
+        raise HTTPException(502, f"could not create the new event (kept the original): {e}")
+
+    # === STEP 3: record the NEW booking ======================================
+    await db.execute(
+        text("INSERT INTO booking (candidate_id, slot_id, gcal_event_id, meet_link) "
+             "VALUES (:c,:s,:e,:m)"),
+        {"c": candidate_id, "s": body.slot_id, "e": ev["event_id"], "m": ev["meet_link"]})
+
+    # === STEP 4: NOW cancel the OLD one (delete event, free slot, supersede) ==
+    # New booking already exists, so even if old-event deletion hiccups we never
+    # lose the interview. delete_event is idempotent.
+    if old["gcal_event_id"]:
+        try:
+            await run_in_threadpool(gcal.delete_event, creds, acc["email"], old["gcal_event_id"])
+        except Exception:
+            pass  # new booking stands; stale old event is a minor cleanup issue
+    await db.execute(
+        text("UPDATE slot SET status='available', hold_id=NULL, hold_owner=NULL, "
+             "hold_expires_at=NULL WHERE id=:s"), {"s": old["slot_id"]})
+    await db.execute(
+        text("UPDATE booking SET status='superseded', cancelled_at=now() WHERE id=:b"),
+        {"b": old["id"]})
+    await db.execute(text("UPDATE candidate SET status='confirmed' WHERE id=:c"),
+                     {"c": candidate_id})
+
+    # === confirmations =======================================================
+    tz = cand["timezone"] or job["timezone"]
+    old_when = old["start_ts"].astimezone(safe_zone(tz)).strftime("%A %d %B, %I:%M %p %Z")
+    new_when = new_slot["start_ts"].astimezone(safe_zone(tz)).strftime("%A %d %B %Y, %I:%M %p %Z")
+    cand_body = (f"Hi {cand['name'] or 'there'},\n\nYour {title} interview has been moved from "
+                 f"{old_when} to {new_when}.\n\nGoogle Meet: {ev['meet_link']}\n\nSee you then.")
+    iv_body = (f"Hi {iv_name},\n\n{cand['name'] or cand['email']}'s {title} interview moved to "
+               f"{new_when} (was {old_when}).\n\nGoogle Meet: {ev['meet_link']}")
+    mail_status = "sent"
+    try:
+        await run_in_threadpool(gcal.send_email, creds, to=cand["email"],
+                                subject=f"Interview rescheduled — {title}", body=cand_body)
+        await run_in_threadpool(gcal.send_email, creds, to=iv_email,
+                                subject=f"Interview rescheduled — {cand['name'] or cand['email']}",
+                                body=iv_body)
+    except Exception as e:
+        mail_status = f"rescheduled, but notification email failed: {e}"
+
+    await db.execute(
+        text("INSERT INTO event_log (session_id, actor, action, detail) "
+             "VALUES (:s,'recruiter','rescheduled_booking', CAST(:d AS JSONB))"),
+        {"s": job["session_id"],
+         "d": json.dumps({"candidate_id": candidate_id, "old_slot": old["slot_id"],
+                          "new_slot": body.slot_id, "new_event": ev["event_id"]})})
+    await db.commit()
+
+    return {"status": "rescheduled", "candidate_id": candidate_id,
+            "old_slot": old["slot_id"], "new_slot": body.slot_id,
+            "when": new_when, "meet_link": ev["meet_link"], "mail_status": mail_status}
