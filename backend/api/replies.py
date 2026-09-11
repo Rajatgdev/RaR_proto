@@ -92,9 +92,38 @@ async def parse_candidate_reply(job_id: int, candidate_id: int,
     ).mappings().all()
     slots = [{"slot_id": s["slot_id"], "start": s["start_ts"].isoformat(),
               "end": s["end_ts"].isoformat()} for s in slot_rows]
-
+    
     parsed = await run_in_threadpool(
-        rp.parse_reply, reply["body"], tz=tz, offered_slots=slots)
+        rp.parse_reply, reply["body"], tz=tz, offered_slots=slots,
+        already_booked=(cand["status"] == "confirmed"))
+
+    # --- Chunk B/C: route on intent before the slot-pick logic ---
+    if cand["status"] == "confirmed" and parsed["intent"] in ("cancel", "reschedule"):
+        new_status = ("cancel_requested" if parsed["intent"] == "cancel"
+                      else "reschedule_requested")
+        await db.execute(
+            text("UPDATE candidate SET status = :st WHERE id = :c"),
+            {"st": new_status, "c": candidate_id})
+        await db.execute(
+            text("INSERT INTO reply_parse (candidate_id, thread_id, raw_text, windows, "
+                 "confidence, note, outcome) VALUES (:c,:t,:r,CAST(:w AS JSONB),:conf,:n,:o)"),
+            {"c": candidate_id, "t": thread, "r": reply["body"], "w": json.dumps([]),
+             "conf": parsed["confidence"], "n": parsed["note"], "o": new_status})
+        await db.execute(
+            text("INSERT INTO event_log (session_id, actor, action, detail) "
+                 "VALUES (:s,'agent','reply_intent', CAST(:d AS JSONB))"),
+            {"s": job["session_id"],
+             "d": json.dumps({"candidate_id": candidate_id, "intent": parsed["intent"],
+                              "requested_date": parsed["requested_date"]})})
+        await db.commit()
+        return {
+            "status": parsed["intent"],          # 'cancel' | 'reschedule'
+            "reason": parsed["note"],
+            "reply_from": reply["from"], "reply_body": reply["body"],
+            "confidence": parsed["confidence"], "note": parsed["note"],
+            "requested_date": parsed["requested_date"],
+            "windows": [], "proposed_slots": [],
+        }
 
     matched = rp.intersect_slots(parsed, slots, tz=tz)
     decision = rp.decide(parsed, matched)
@@ -292,3 +321,113 @@ async def confirm_booking(job_id: int, candidate_id: int, body: Confirm,
     return {"status": "booked", "slot_id": body.slot_id, "when": when,
             "meet_link": ev["meet_link"], "event_link": ev["html_link"],
             "mail_status": mail_status}
+
+
+# --- Chunk B: cancel a confirmed booking ---------------------------------
+
+class Cancel(BaseModel):
+    reason: str | None = None
+
+
+@router.post("/{candidate_id}/cancel")
+async def cancel_booking(job_id: int, candidate_id: int, body: Cancel,
+                         db: AsyncSession = Depends(get_session)):
+    """Cancel this candidate's active booking. Safe order: delete the calendar
+    event -> free the slot -> mark booking cancelled -> candidate 'cancelled' ->
+    notify both parties. Only acts on a candidate who is actually booked; the
+    gated agent card / recruiter click is the authorisation (never auto-fired)."""
+    job = (
+        await db.execute(
+            text("SELECT session_id, params, timezone FROM job WHERE id = :j"),
+            {"j": job_id})
+    ).mappings().one_or_none()
+    if job is None:
+        raise HTTPException(404, "job not found")
+    card = job["params"]
+
+    cand = (
+        await db.execute(
+            text("SELECT id, name, email, timezone, status FROM candidate "
+                 "WHERE id = :c AND job_id = :j"), {"c": candidate_id, "j": job_id})
+    ).mappings().one_or_none()
+    if cand is None:
+        raise HTTPException(404, "candidate not found")
+
+    booking = (
+        await db.execute(
+            text("SELECT b.id, b.slot_id, b.gcal_event_id, s.start_ts "
+                 "FROM booking b JOIN slot s ON s.id = b.slot_id "
+                 "WHERE b.candidate_id = :c AND b.status = 'active' "
+                 "ORDER BY b.id DESC LIMIT 1"), {"c": candidate_id})
+    ).mappings().one_or_none()
+    if booking is None:
+        raise HTTPException(409, "no active booking to cancel for this candidate")
+
+    acc = await _account(db)
+    creds = gcal.credentials_from_json(acc["credentials"])
+    try:
+        refreshed = await run_in_threadpool(gcal.ensure_fresh, creds)
+    except Exception:
+        raise HTTPException(401, "Google connection expired; reconnect required")
+    if refreshed:
+        await db.execute(
+            text("UPDATE google_account SET credentials = CAST(:c AS JSONB), "
+                 "updated_at = now() WHERE id = :id"),
+            {"c": creds.to_json(), "id": acc["id"]})
+        await db.commit()
+
+    # 1. Delete the Google event (idempotent). If this fails hard, abort BEFORE
+    #    touching the DB so state stays consistent (booking still active).
+    if booking["gcal_event_id"]:
+        try:
+            await run_in_threadpool(
+                gcal.delete_event, creds, acc["email"], booking["gcal_event_id"])
+        except Exception as e:
+            raise HTTPException(502, f"could not cancel the calendar event: {e}")
+
+    # 2. Free the slot, 3. mark booking cancelled, 4. candidate cancelled.
+    await db.execute(
+        text("UPDATE slot SET status='available', hold_id=NULL, hold_owner=NULL, "
+             "hold_expires_at=NULL WHERE id=:s"), {"s": booking["slot_id"]})
+    await db.execute(
+        text("UPDATE booking SET status='cancelled', cancelled_at=now() WHERE id=:b"),
+        {"b": booking["id"]})
+    await db.execute(
+        text("UPDATE candidate SET status='cancelled' WHERE id=:c"), {"c": candidate_id})
+
+    # 5. Notify both parties (best-effort; cancellation already committed).
+    interviewer = (
+        await db.execute(
+            text("SELECT name, email FROM interviewer WHERE job_id=:j LIMIT 1"), {"j": job_id})
+    ).mappings().one_or_none()
+    iv_email = interviewer["email"] if interviewer else acc["email"]
+    iv_name = interviewer["name"] if interviewer else "the interviewer"
+    title = card.get("job_title", "the interview")
+    tz = cand["timezone"] or job["timezone"]
+    when = booking["start_ts"].astimezone(safe_zone(tz)).strftime("%A %d %B %Y, %I:%M %p %Z")
+
+    cand_body = (f"Hi {cand['name'] or 'there'},\n\nYour {title} interview scheduled for "
+                 f"{when} has been cancelled. If you'd like to rebook, just reply with a "
+                 f"date you're free from and I'll send new times.\n\nBest,\nThe scheduling team")
+    iv_body = (f"Hi {iv_name},\n\nThe {title} interview with "
+               f"{cand['name'] or cand['email']} on {when} has been cancelled.")
+    mail_status = "sent"
+    try:
+        await run_in_threadpool(gcal.send_email, creds, to=cand["email"],
+                                subject=f"Interview cancelled — {title}", body=cand_body)
+        await run_in_threadpool(gcal.send_email, creds, to=iv_email,
+                                subject=f"Interview cancelled — {cand['name'] or cand['email']}",
+                                body=iv_body)
+    except Exception as e:
+        mail_status = f"cancelled, but notification email failed: {e}"
+
+    await db.execute(
+        text("INSERT INTO event_log (session_id, actor, action, detail) "
+             "VALUES (:s,'recruiter','cancelled_booking', CAST(:d AS JSONB))"),
+        {"s": job["session_id"],
+         "d": json.dumps({"candidate_id": candidate_id, "slot_id": booking["slot_id"],
+                          "reason": body.reason})})
+    await db.commit()
+
+    return {"status": "cancelled", "candidate_id": candidate_id,
+            "slot_freed": booking["slot_id"], "when": when, "mail_status": mail_status}

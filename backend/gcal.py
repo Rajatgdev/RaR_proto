@@ -191,3 +191,15 @@ def _meet_link(event: dict) -> str:
         if ep.get("entryPointType") == "video" and ep.get("uri"):
             return ep["uri"]
     return ""
+
+def delete_event(creds: Credentials, calendar_id: str, event_id: str) -> None:
+    """Cancel a calendar event and notify attendees. Idempotent: a 404/410
+    (already gone) is treated as success so a retried cancel doesn't error."""
+    from googleapiclient.errors import HttpError
+    try:
+        _service(creds).events().delete(
+            calendarId=calendar_id, eventId=event_id, sendUpdates="all").execute()
+    except HttpError as e:
+        if e.resp is not None and e.resp.status in (404, 410):
+            return  # already deleted/cancelled — fine
+        raise

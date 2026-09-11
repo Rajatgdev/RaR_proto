@@ -133,6 +133,15 @@ async def _propose_reoffer(db, job_id, args):
         {"candidate_id": args["candidate_id"], "target": args.get("target")})
 
 
+async def _propose_cancel(db, job_id, args):
+    return _propose(
+        "cancel", "Cancel this candidate's interview?",
+        "Deletes the Google Calendar event, notifies both parties, and frees the slot. Irreversible.",
+        f"/jobs/{job_id}/replies/{args['candidate_id']}/cancel", "POST",
+        {"reason": args.get("reason")},
+        {"candidate_id": args["candidate_id"], "reason": args.get("reason")})
+
+
 # --- the registry ---------------------------------------------------------
 
 class Tool:
@@ -214,6 +223,12 @@ TOOLS: dict[str, Tool] = {t.name: t for t in [
          _p({"candidate_id": {"type": "integer"}, "target": {"type": "string"}},
             ["candidate_id"]),
          _propose_reoffer),
+    Tool("cancel_booking", GATED,
+         "Propose cancelling a candidate's confirmed interview (deletes the event, "
+         "frees the slot, notifies both). Returns an approval card; does NOT execute.",
+         _p({"candidate_id": {"type": "integer"}, "reason": {"type": "string"}},
+            ["candidate_id"]),
+         _propose_cancel),
 ]}
 
 

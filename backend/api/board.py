@@ -16,6 +16,9 @@ _LABELS = {
     "reply_received": "Reply received",
     "confirmed": "Confirmed",
     "needs_attention": "Needs attention",
+    "cancel_requested": "Cancel requested",
+    "reschedule_requested": "Reschedule requested",
+    "cancelled": "Cancelled",
 }
 
 
